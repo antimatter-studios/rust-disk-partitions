@@ -284,6 +284,18 @@ jobs:
         # CI here does not install chore -- a guard wired only into a task
         # nothing runs is a guard that reports protection it is not providing.
         run: scripts/agents-core-check.sh
+      - name: the script tests pass
+        # Every tests/scripts/*.sh, by glob, so a new guard is picked up
+        # without editing this file. `nullglob` off on purpose: an empty
+        # directory leaves the literal pattern, which bash cannot open, and
+        # the step fails rather than passing having run nothing.
+        run: |
+          set -euo pipefail
+          for t in tests/scripts/*.sh; do
+            echo "::group::$t"
+            bash "$t"
+            echo "::endgroup::"
+          done
 
   ci-ok:
     name: ci-ok
