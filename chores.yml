@@ -15,9 +15,9 @@ chore_min_version: 0.6.0
 # file: this crate produces libpartitions.a AND the headers beside it, so
 # there is no single path to name.
 #
-# NOTHING IN DISKJOCKEY LINKS THIS ARCHIVE TODAY, and that is worth saying
-# rather than leaving a reader to wonder why the task exists. diskjockey
-# consumes am-partitions as a CRATE — through rust-disk-probe, and as a
+# NO KNOWN CONSUMER LINKS THIS ARCHIVE TODAY, and that is worth saying
+# rather than leaving a reader to wonder why the task exists. Consumers
+# take am-partitions as a CRATE — through rust-disk-probe, and as a
 # dev-dependency of the img readers' `inspect` example — so it arrives
 # already linked inside somebody else's output. The task is here for
 # uniformity, for anyone building this crate on its own, and because the
@@ -169,8 +169,14 @@ tasks:
     desc: Formatting and clippy, exactly as CI runs them
     cmds:
       - scripts/agents-core-check.sh
+      - task: test:scripts
       - cargo fmt --check
       - cargo clippy --locked --all-targets -- -D warnings
+
+  test:scripts:
+    desc: Every tests/scripts/*.sh guard, exactly as CI runs them
+    cmds:
+      - 'for t in tests/scripts/*.sh; do bash "$t" || exit 1; done'
 
   check:ci-gate:
     desc: The one required check stands for every job in ci.yml
