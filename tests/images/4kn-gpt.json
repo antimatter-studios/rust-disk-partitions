@@ -1,0 +1,32 @@
+{
+  "produced_by": "sfdisk from util-linux 2.41.5",
+  "sfdisk": {
+     "partitiontable": {
+        "label": "gpt",
+        "id": "188E087D-2DAB-4605-97A0-30C6090C1678",
+        "device": "4kn-gpt.img",
+        "unit": "sectors",
+        "firstlba": 6,
+        "lastlba": 58,
+        "grain": "4096",
+        "sectorsize": 4096,
+        "partitions": [
+           {
+              "node": "4kn-gpt.img1",
+              "start": 12,
+              "size": 20,
+              "type": "0FC63DAF-8483-4772-8E79-3D69D8477DE4",
+              "uuid": "B15016A6-0F37-44FB-872A-2F7D5D8230DC",
+              "name": "root"
+           },{
+              "node": "4kn-gpt.img2",
+              "start": 32,
+              "size": 10,
+              "type": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+              "uuid": "CA58BDC9-BD4C-4579-ADE8-84A1EE4F7C73",
+              "name": "esp"
+           }
+        ]
+     }
+  }
+}

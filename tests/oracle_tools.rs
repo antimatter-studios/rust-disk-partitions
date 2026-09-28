@@ -1448,6 +1448,14 @@ fn a_hybrid_mbr_sgdisk_wrote_survives_a_round_trip_through_this_crate() {
 // suite the property that makes it runnable anywhere (no loop device,
 // no root, every tool reading a plain file), or a runner with
 // util-linux 2.40. Neither belongs in the commit that adds the oracle.
-// Tracked in #123; this crate's refusal of a 4Kn table by name is
-// covered meanwhile by tests/fixtures.rs and tests/mutation.rs, which
-// is self-marked homework and is exactly why the issue is open.
+//
+// IT IS COVERED NOW, IN tests/sector_size.rs, BY RECORDING THE TOOL
+// RATHER THAN REQUIRING IT (#123). `scripts/make-4kn-fixture.sh` writes
+// tests/images/4kn-gpt.img with an sfdisk that does have the option,
+// and records that tool's own `--json` description of the table beside
+// it; the tests compare this crate's refusal, and the image's bytes,
+// against that record. So the disk under test is one somebody else
+// calls healthy -- which is the whole point, because the failure being
+// guarded against is a healthy disk reported as a corrupt table -- and
+// the tests still run on every leg of the matrix rather than on the one
+// that has util-linux. Same arrangement as fuzz/corpus/.
