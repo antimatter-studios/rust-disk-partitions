@@ -317,6 +317,10 @@ impl PartitionSet {
             // an existing partition already answers to.
             slot: None,
             issues: 0,
+            // Nothing has been read off a device for this partition:
+            // it is being placed, not probed. The writers ignore the
+            // field, and `length` is the only length there is.
+            available_length: length_sectors * SECTOR_SIZE,
         };
         let idx = self.partitions.len();
         self.partitions.push(part);

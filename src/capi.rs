@@ -183,6 +183,22 @@ pub struct PartitionInfo {
     /// because the slice for an entry sitting on LBA 1..33 covers the
     /// GPT header and the entry array.
     pub issues: u32,
+    /// How many of this partition's bytes the device actually holds --
+    /// equal to `length` for every partition that fits, and 0 for one
+    /// that begins past the end of the device.
+    ///
+    /// A table describes the disk it was written for, and the bytes can
+    /// stop before the table does (a `dd` that ended early, an image
+    /// copied off a larger disk, a table left stale after a shrink).
+    /// `length` is what the table claims and this is what is there, and
+    /// **this is the one to size a buffer with**: it is exactly the
+    /// size of the device [`partitions_open_slice`] hands out for the
+    /// same entry, which used to be discoverable only as an unexpected
+    /// short read several layers later (#38).
+    ///
+    /// See [`crate::Partition::available_length`] for what a device
+    /// that states no size at all does here.
+    pub available_length: u64,
 }
 
 // The C declaration of the struct above lives in `include/partitions.h` and
@@ -196,7 +212,7 @@ pub struct PartitionInfo {
 // compile on a 32-bit target. `tests/c_abi.rs` has no such limit — it
 // compares Rust against a C compiler for whatever target is being built.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<PartitionInfo>() == 88);
+const _: () = assert!(size_of::<PartitionInfo>() == 96);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(align_of::<PartitionInfo>() == 8);
 
@@ -406,6 +422,8 @@ pub unsafe extern "C" fn partitions_sniff_device(
             // A whole-device probe has no table, so no slot.
             slot: None,
             issues: 0,
+            // The partition IS the device, so all of it is there.
+            available_length: device_size_bytes,
         };
         match sniff::sniff(&*parent, &synthetic) {
             // Nothing recognised in a window the declared size cut short
@@ -518,8 +536,15 @@ fn slice_on_device(parent_size: u64, start: u64, length: u64) -> Option<u64> {
     if start >= parent_size {
         return None;
     }
-    let available = parent_size - start;
-    Some(length.min(available))
+    // The same clamp `PartitionInfo.available_length` reports, from the
+    // same function, so the number a caller is given and the device it
+    // is handed cannot drift apart (#38). The `None` above is what this
+    // call cannot express: nothing to open is not a zero-length slice.
+    Some(crate::probe::available_on_device(
+        start,
+        length,
+        parent_size,
+    ))
 }
 
 /// Free a partition list. Safe to call with NULL.
@@ -573,6 +598,7 @@ fn build_info(p: &Partition, table: TableKindCode) -> PartitionInfo {
         attributes,
         slot: p.slot.map_or(-1, |s| s as i32),
         issues: p.issues,
+        available_length: p.available_length,
     }
 }
 
@@ -794,6 +820,7 @@ mod tests {
             uuid: None,
             slot: None,
             issues: 0,
+            available_length: 4096,
         };
         assert_eq!(build_info(&p, TableKindCode::Gpt).slot, -1);
     }

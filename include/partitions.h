@@ -118,6 +118,20 @@ typedef struct {
                                      * entry disagrees with the header that
                                      * describes it, and partitions_open_slice
                                      * will refuse it */
+    uint64_t       available_length; /* how many of this partition's bytes the
+                                     * device actually holds: equal to
+                                     * `length` for every partition that fits,
+                                     * 0 for one starting past the end of the
+                                     * device. A table describes the disk it
+                                     * was written for and the bytes can stop
+                                     * before the table does — a dd that ended
+                                     * early, an image copied off a larger
+                                     * disk, a table left stale after a shrink
+                                     * — so `length` is the claim and this is
+                                     * what is there. SIZE A BUFFER WITH THIS
+                                     * ONE: it is exactly the size of the
+                                     * device partitions_open_slice hands out
+                                     * for the same entry */
 } PartitionInfo;
 
 /* -------------------------------------------------------------------------
