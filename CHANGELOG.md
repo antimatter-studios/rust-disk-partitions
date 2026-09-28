@@ -6,6 +6,32 @@ never does.
 
 ## [Unreleased]
 
+### Changed
+
+- **A tier prints a verdict, not a transcript.** Every green matrix leg
+  replayed 289 `... ok` lines — the test step captured its log by
+  redirection and then `cat`-ed the whole thing back from a trap, so the
+  capture bought nothing and a green run cost 4,262 lines across six jobs.
+  `chore test`, `chore test:release` and `chore test:oracle` now run
+  through `scripts/tier.sh`: the whole run goes to `tmp/logs/<tier>.log`,
+  a pass prints one verdict line naming it, and a run that passed but
+  printed more than its measured budget fails with status 65. Measured
+  here: 348 lines and 21,474 bytes of log, two lines on the terminal. The
+  budgets and the executed-test floors live in `chores.yml` beside the
+  command each one bounds, `scripts/test-floor.sh` enforces the floors
+  from the log, and CI keeps every tier log as an artefact with
+  `if: always()`, so nothing that stopped being printed stopped being
+  retrievable.
+
+  The wrapper itself is **not** committed here: `scripts/output-budget.sh`
+  belongs to `rust-fs-core` and is resolved at run time, verified by
+  `--version` rather than by a pinned digest, and a present-but-wrong copy
+  is fatal rather than a reason to look elsewhere.
+  `tests/scripts/test-tier-resolver.sh` drives every one of those
+  refusals, and `tests/ci_profile.rs` learned to read through the wrapper
+  so the guard that holds the PR gate to a debug run still finds it
+  (#127).
+
 ### Added
 
 - **The 4Kn refusal is checked against a disk somebody else wrote.**

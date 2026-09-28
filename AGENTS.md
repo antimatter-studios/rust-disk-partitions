@@ -161,17 +161,36 @@ staticlib.
 ## Running tests
 
 ```sh
-chore test        # the suite
+chore test          # the suite, in debug
+chore test:release  # the same suite where arithmetic wraps instead of panicking
+chore test:oracle   # against sgdisk, sfdisk, blkid and partx
 chore build
-chore lint        # fmt, the agent-core check, clippy
-chore staticlib   # what the app links
+chore lint          # fmt, the agent-core check, clippy
+chore staticlib     # what the app links
 ```
 
 CI runs `test`, `test-release`, `oracle`, `fmt`, and `ci-ok` aggregates them.
 
 Both profiles are run on purpose: arithmetic that panics in debug can wrap
 silently in release. `tests/ci_profile.rs` holds the debug run to being a debug
-run.
+run — and it reads *through* the tier wrapper to find it, so wrapping a run
+cannot hide it.
+
+**Every tier goes through `scripts/tier.sh`**, which is this repository's half
+of the shared block's "Output is budgeted". It does not carry a copy of the
+wrapper: `scripts/output-budget.sh` belongs to `rust-fs-core` and is resolved
+at run time — the sibling beside this checkout first, then whatever cargo
+resolved `am-fs-core` to — and whatever is found must answer `--version` with
+`rust-fs-core-output-budget 1`. A present-but-wrong copy is fatal rather than
+a reason to look elsewhere. The budgets and the floors are in `chores.yml`,
+measured, beside the command each one bounds;
+`tests/scripts/test-tier-resolver.sh` drives every refusal.
+
+A pass prints one verdict line naming `tmp/logs/<tier>.log`; **read the log**
+rather than expecting the tier to recite it. `chore test -- --verbose`
+(`OUTPUT_BUDGET_VERBOSE=1`) streams the run live and does *not* lift the
+budget. A failing tier is quiet too, from core v0.2.13: `--tail N` brings the
+tail back. CI uploads every tier log as an artefact with `if: always()`.
 
 ## The oracle is sgdisk and sfdisk
 
