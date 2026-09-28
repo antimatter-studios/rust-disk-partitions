@@ -146,18 +146,23 @@ tasks:
   # ever goes up.
   #
   #   tier     measured lines/bytes   budget         floor  measured tests
-  #   debug    348 / 21,474           440 / 28,000     258  293
-  #   release  (see below)            440 / 28,000     258  293
-  #   oracle    14 / 668               40 /  3,000       9  9
+  #   debug    348 / 21,640           440 / 28,000     258  293
+  #   release  351 / 21,849           440 / 28,000     258  293
+  #   oracle    14 /    667            40 /  3,000       9  9
   #
-  # debug and oracle were measured on 2026-09-28 on the host, with a warm
-  # build. THE BUDGET IS ~28% ABOVE THE MEASUREMENT rather than ~10%, because
-  # CI measures larger than a warm host does for a reason that has nothing to
-  # do with the suite: a cold cargo cache prints a `Compiling` line per
-  # dependency into the same log. The release row carries the debug
-  # measurement because it runs the same suite in the other profile, and CI
-  # keeps every tier log as an artefact, so it can be tightened from a real
-  # release run rather than guessed at again.
+  # EVERY ROW WAS MEASURED IN CI, from the retained tier-logs-* artifacts of
+  # run 36411947701 on the branch for #127 -- the debug row from the largest
+  # of the three matrix legs (windows-latest; ubuntu and macOS were 21,604
+  # bytes). CI is the place to measure: its absolute paths are longer than a
+  # host's and a cold cargo cache prints a `Compiling` line per dependency
+  # into the same log, so a host measurement flatters the row. The host runs
+  # for comparison were 348 / 21,474 and 14 / 668, which is what the
+  # artefacts being kept is for.
+  #
+  # The budgets sit ~25% above the measurement rather than ~10%, so ordinary
+  # churn in the suite does not trip them while the transcript this replaced
+  # -- 289 `... ok` lines per leg, replayed unconditionally -- could not
+  # return unnoticed.
   #
   # The floors are scripts/test-floor.sh, not the budget: a budget fails a
   # tier that PRINTS too much and cannot see a tier that RAN almost nothing.
