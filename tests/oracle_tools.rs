@@ -80,6 +80,7 @@ impl GptSpec {
             uuid: Some(self.uuid),
             slot: None,
             issues: 0,
+            available_length: self.sectors * SECTOR_SIZE,
         }
     }
 }
@@ -551,6 +552,7 @@ fn mbr_tables_this_crate_writes_are_read_back_field_by_field_by_sfdisk_partx_and
                 uuid: None,
                 slot: None,
                 issues: 0,
+                available_length: sectors * SECTOR_SIZE,
             })
             .collect();
         let dev = img.device();

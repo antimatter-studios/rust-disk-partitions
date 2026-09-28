@@ -131,6 +131,7 @@ fn mbr_write_round_trip_preserves_active_flag() {
         uuid: None,
         slot: None,
         issues: 0,
+        available_length: 4096 * 512,
     };
     mbr::write_mbr(&dev, &[part]).unwrap();
     let (_, parts) = probe::probe(&dev).unwrap();
@@ -151,6 +152,7 @@ fn gpt_efi_system_partition_is_bootable_without_attribute_bit() {
         uuid: Some([0u8; 16]),
         slot: None,
         issues: 0,
+        available_length: 100 << 20,
     };
     assert!(p.is_bootable());
 }
@@ -168,6 +170,7 @@ fn gpt_linux_filesystem_with_legacy_bios_bit_is_bootable() {
         uuid: Some([0u8; 16]),
         slot: None,
         issues: 0,
+        available_length: 100 << 20,
     };
     assert!(p.is_bootable());
 }
@@ -185,6 +188,7 @@ fn gpt_linux_filesystem_with_zero_attributes_is_not_bootable() {
         uuid: Some([0u8; 16]),
         slot: None,
         issues: 0,
+        available_length: 100 << 20,
     };
     assert!(!p.is_bootable());
 }
@@ -212,6 +216,7 @@ fn gpt_write_round_trip_preserves_attributes() {
         uuid: Some(part_uuid),
         slot: None,
         issues: 0,
+        available_length: 8 * 1024 * 1024,
     };
     gpt_write::write_gpt(&dev, &[part], disk_guid).unwrap();
     let (kind, parts) = probe::probe(&dev).unwrap();

@@ -254,8 +254,8 @@ pub fn entry_role(type_byte: u8) -> EntryRole {
 /// a probed table back needs both halves. The two must stay in step, so
 /// `every_non_empty_entry_is_either_a_volume_or_reserved` asserts the
 /// property rather than leaving it to whoever edits one of them.
-pub fn parse(lba0: &[u8; crate::SECTOR_SIZE_USIZE]) -> Result<Vec<Partition>> {
-    let mut all = parse_all_entries(lba0)?;
+pub fn parse(lba0: &[u8; crate::SECTOR_SIZE_USIZE], device_size: u64) -> Result<Vec<Partition>> {
+    let mut all = parse_all_entries(lba0, device_size)?;
     all.retain(|p| match p.kind {
         PartitionKind::Mbr { type_byte, .. } => entry_role(type_byte) == EntryRole::Volume,
         _ => true,
@@ -270,7 +270,10 @@ pub fn parse(lba0: &[u8; crate::SECTOR_SIZE_USIZE]) -> Result<Vec<Partition>> {
 /// than mount from it — a repair or inspection tool — where leaving an
 /// entry out would be its own kind of wrong answer. Use [`entry_role`]
 /// to tell them apart.
-pub fn parse_all_entries(lba0: &[u8; crate::SECTOR_SIZE_USIZE]) -> Result<Vec<Partition>> {
+pub fn parse_all_entries(
+    lba0: &[u8; crate::SECTOR_SIZE_USIZE],
+    device_size: u64,
+) -> Result<Vec<Partition>> {
     let mut out = Vec::new();
     for i in 0..layout::ENTRY_COUNT {
         let off = layout::entry_at(i);
@@ -301,6 +304,7 @@ pub fn parse_all_entries(lba0: &[u8; crate::SECTOR_SIZE_USIZE]) -> Result<Vec<Pa
             uuid: None,
             slot: Some(i as u32),
             issues: 0,
+            available_length: crate::probe::available_on_device(start, length, device_size),
         });
     }
     Ok(out)
@@ -652,7 +656,7 @@ mod complement_tests {
     #[test]
     fn every_non_empty_entry_is_either_a_volume_or_reserved() {
         let lba0 = mixed_table();
-        let volumes = parse(&lba0).unwrap();
+        let volumes = parse(&lba0, 0).unwrap();
         let reserved = reserved_entries(&lba0);
 
         let non_empty = (0..layout::ENTRY_COUNT)

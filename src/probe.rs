@@ -60,6 +60,51 @@ pub struct Partition {
     /// Always zero for MBR entries, which have no header stating a
     /// usable range.
     pub issues: u32,
+    /// How many of this partition's bytes the device it was probed from
+    /// actually holds -- `length` for every partition that fits, which
+    /// is every partition on a healthy disk.
+    ///
+    /// A table describes the disk it was written for, and the bytes can
+    /// stop before the table does: a `dd` that ended early, an image
+    /// copied off a larger disk, a table left stale after a shrink. The
+    /// claim is kept rather than collapsed to the truth because the
+    /// claim is the information a repair tool needs -- it says how large
+    /// the partition was when the table was written, and it is what an
+    /// "this image is incomplete" message quotes. Reporting only the
+    /// truth would leave this crate unable to say a copy stopped early.
+    ///
+    /// What the pair prevents is the disagreement: a caller sizing a
+    /// buffer from `length` used to meet the missing bytes as an
+    /// unexpected short read several layers later, through a device
+    /// [`crate::capi::partitions_open_slice`] had already clamped.
+    ///
+    /// Zero when the partition begins past the end of the device, and
+    /// equal to `length` when the device states no size at all -- a raw
+    /// device node through `FileDevice` reports 0 because `stat` does
+    /// (#37), and subtracting from that would report every partition on
+    /// such a device as entirely absent.
+    ///
+    /// **The writers ignore it.** Only `start` and `length` go into a
+    /// table, so a partition built by hand for
+    /// [`crate::mutation::PartitionSet`] may set it to whatever it
+    /// likes; the probe is what fills it in with an answer.
+    pub available_length: u64,
+}
+
+/// How much of a partition at `start` running for `length` bytes a
+/// device of `device_size` bytes actually holds.
+///
+/// One copy, because the answer is a policy rather than an expression:
+/// clamp rather than refuse (a truncated image is still worth reading),
+/// treat a stated size of zero as no statement, and count nothing for a
+/// partition that begins past the end.
+pub(crate) fn available_on_device(start: u64, length: u64, device_size: u64) -> u64 {
+    if device_size == 0 {
+        // The device has said nothing about its size, so nothing here
+        // can contradict the table.
+        return length;
+    }
+    length.min(device_size.saturating_sub(start))
 }
 
 /// The on-disk type-tag for the partition. For GPT this is the type GUID +
@@ -337,7 +382,7 @@ fn probe_inner(
             }
             return Err(primary);
         }
-        let parts = mbr::parse(&lba0)?;
+        let parts = mbr::parse(&lba0, dev.size_bytes())?;
         return Ok((TableKind::Mbr, parts, TableSource::Mbr));
     }
 

@@ -24,6 +24,15 @@ impl Bytes {
     fn write_u32_le(&self, off: usize, v: u32) {
         self.write(off, &v.to_le_bytes());
     }
+    /// Cut the device short, leaving the table it already carries
+    /// describing a disk that is no longer there.
+    ///
+    /// This is a `dd` that stopped early and an image copied off a
+    /// larger disk -- the two ways a partition ends up claiming bytes
+    /// the device does not have (#38).
+    fn truncate(&self, new_len: usize) {
+        self.0.lock().unwrap().truncate(new_len);
+    }
 }
 
 impl BlockRead for Bytes {
@@ -546,6 +555,7 @@ fn sniff_through_partition_offset() {
         uuid: None,
         slot: None,
         issues: 0,
+        available_length: 8192,
     };
     let kind = sniff(&dev, &part).unwrap();
     assert_eq!(kind, FsKind::Ntfs);
@@ -689,7 +699,8 @@ fn an_extended_container_is_not_reported_as_a_volume() {
 
         // The container is still visible to a caller that wants the raw
         // table rather than the volumes on it.
-        let every = partitions::mbr::parse_all_entries(&mbr_sector(&dev)).unwrap();
+        let every =
+            partitions::mbr::parse_all_entries(&mbr_sector(&dev), dev.size_bytes()).unwrap();
         assert_eq!(every.len(), 2, "type {container:#04x}");
         assert!(matches!(
             every[1].kind,
@@ -785,6 +796,7 @@ fn a_partition_running_off_the_end_is_still_sniffed() {
         uuid: None,
         slot: Some(0),
         issues: 0,
+        available_length: 8 * 1024,
     };
 
     assert_eq!(
@@ -810,6 +822,7 @@ fn a_partition_beginning_past_the_end_is_still_an_error() {
         uuid: None,
         slot: Some(0),
         issues: 0,
+        available_length: 0,
     };
     assert!(
         sniff::sniff(&dev, &part).is_err(),
@@ -846,6 +859,7 @@ fn a_partition_beginning_past_the_end_is_an_error_on_a_real_file_device() {
             uuid: None,
             slot: Some(0),
             issues: 0,
+            available_length: 0,
         };
         let got = sniff::sniff(&dev, &part);
         assert!(
@@ -878,6 +892,7 @@ fn swap_is_sniffed_through_sniff_at_every_page_size_classify_probes() {
             uuid: None,
             slot: Some(0),
             issues: 0,
+            available_length: 4 * 1024 * 1024,
         };
         assert_eq!(
             sniff::sniff(&dev, &part).unwrap(),
@@ -1688,4 +1703,190 @@ fn an_ordinary_512_byte_gpt_disk_is_not_taken_for_a_4kn_disk() {
     assert_eq!(kind, TableKind::Gpt);
     assert_eq!(parts.len(), 1);
     assert_eq!(parts[0].start, 2048 * 512);
+}
+
+// ---------------------------------------------------------------------------
+// A partition that runs past the end of the device (#38)
+// ---------------------------------------------------------------------------
+
+/// A GPT disk cut short reports both what its table claims and what is
+/// on the device.
+///
+/// The claim is real information -- it is how large the partition was
+/// when the table was written, which is what a repair tool quotes and
+/// what an "your image is incomplete" message needs -- so it is kept.
+/// What must travel with it is how much of it the device actually
+/// holds, because a caller sizing a buffer from the claim gets the
+/// short read several layers later instead.
+#[test]
+fn a_gpt_partition_past_the_end_reports_its_claim_and_what_is_there() {
+    let dev = Bytes::new(8 * 1024 * 1024);
+    build_gpt_with_entries(
+        &dev,
+        &[
+            (type_guids::LINUX_FILESYSTEM, [1u8; 16], 34, 4095, "cut"),
+            (type_guids::LINUX_FILESYSTEM, [2u8; 16], 4096, 8191, "gone"),
+        ],
+    );
+    // The copy stopped after 1 MiB, with the table still describing the
+    // 8 MiB disk it was written for.
+    dev.truncate(1024 * 1024);
+
+    let (kind, parts) = probe(&dev).unwrap();
+    assert_eq!(kind, TableKind::Gpt);
+    assert_eq!(parts.len(), 2);
+
+    // Partly there: the claim stands, and the tail that is missing is
+    // not counted as present.
+    assert_eq!(parts[0].start, 34 * 512);
+    assert_eq!(parts[0].length, (4095 - 34 + 1) * 512);
+    assert_eq!(parts[0].available_length, 1024 * 1024 - 34 * 512);
+
+    // Beginning past the end: none of it is there, and the entry is
+    // still reported rather than dropped.
+    assert_eq!(parts[1].start, 4096 * 512);
+    assert_eq!(parts[1].length, (8191 - 4096 + 1) * 512);
+    assert_eq!(parts[1].available_length, 0);
+}
+
+/// An MBR disk cut short reports the same pair.
+///
+/// `mbr::parse` could not answer this at all before: it was handed a
+/// sector and no device, so the size it would have to compare against
+/// was not in the function.
+#[test]
+fn an_mbr_partition_past_the_end_reports_its_claim_and_what_is_there() {
+    let dev = Bytes::new(4 * 1024 * 1024);
+    // 4,000,000 sectors -- roughly 2 GB -- on a 4 MiB device.
+    write_mbr_entry(&dev, 0, 0x83, 2048, 4_000_000);
+    // And one whose first sector is past the end of the device.
+    write_mbr_entry(&dev, 1, 0x83, 16384, 2048);
+    dev.write(510, &[0x55, 0xAA]);
+
+    let (kind, parts) = probe(&dev).unwrap();
+    assert_eq!(kind, TableKind::Mbr);
+    assert_eq!(parts.len(), 2);
+
+    assert_eq!(parts[0].start, 2048 * 512);
+    assert_eq!(parts[0].length, 4_000_000 * 512);
+    assert_eq!(parts[0].available_length, 4 * 1024 * 1024 - 2048 * 512);
+
+    assert_eq!(parts[1].start, 16384 * 512);
+    assert_eq!(parts[1].length, 2048 * 512);
+    assert_eq!(parts[1].available_length, 0);
+}
+
+/// On a disk that holds everything its table describes -- which is every
+/// healthy disk -- the two lengths agree, for both table formats.
+///
+/// This is the control the pair needs: a second length that were ever
+/// short of the first on an intact disk would have every caller
+/// reporting damage that is not there.
+#[test]
+fn every_partition_that_fits_reports_the_same_length_twice() {
+    let gpt = Bytes::new(8 * 1024 * 1024);
+    build_gpt_with_entries(
+        &gpt,
+        &[
+            (type_guids::EFI_SYSTEM, [1u8; 16], 34, 2081, "EFI"),
+            (type_guids::LINUX_FILESYSTEM, [2u8; 16], 2082, 4129, "root"),
+        ],
+    );
+    let (_, parts) = probe(&gpt).unwrap();
+    assert_eq!(parts.len(), 2);
+    for p in &parts {
+        assert_eq!(p.available_length, p.length, "{:?}", p.label);
+    }
+
+    let mbr = Bytes::new(4 * 1024 * 1024);
+    write_mbr_entry(&mbr, 0, 0x83, 2048, 2048);
+    write_mbr_entry(&mbr, 1, 0x82, 4096, 2048);
+    mbr.write(510, &[0x55, 0xAA]);
+    let (_, parts) = probe(&mbr).unwrap();
+    assert_eq!(parts.len(), 2);
+    for p in &parts {
+        assert_eq!(p.available_length, p.length, "slot {:?}", p.slot);
+    }
+}
+
+/// A device that reports no size has told the probe nothing, so the
+/// claim is all there is and the pair agrees.
+///
+/// `FileDevice` over a raw device node reports 0 because `stat` does
+/// (#37). Subtracting from that would report every partition on such a
+/// device as entirely absent.
+#[test]
+fn a_device_that_states_no_size_does_not_make_every_partition_absent() {
+    struct SilentSize(Bytes);
+    impl BlockRead for SilentSize {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+            self.0.read_at(offset, buf)
+        }
+        fn size_bytes(&self) -> u64 {
+            0
+        }
+    }
+
+    let inner = Bytes::new(4 * 1024 * 1024);
+    write_mbr_entry(&inner, 0, 0x83, 2048, 4_000_000);
+    inner.write(510, &[0x55, 0xAA]);
+    let dev = SilentSize(inner);
+
+    let (_, parts) = probe(&dev).unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].length, 4_000_000 * 512);
+    assert_eq!(parts[0].available_length, parts[0].length);
+}
+
+/// The C caller cannot obtain one length without the other, and the
+/// second one is the size of the slice it would be handed.
+///
+/// This is the disagreement the issue is about, measured end to end:
+/// `partitions_get` used to report the claim while
+/// `partitions_open_slice` handed out a device clamped to what is
+/// there, several layers away from the number the caller sized its
+/// buffer with.
+#[test]
+fn the_c_abi_reports_both_lengths_and_the_slice_is_the_second_one() {
+    use partitions::capi::*;
+    use std::ptr;
+    use std::sync::Arc;
+
+    let dev = Bytes::new(8 * 1024 * 1024);
+    build_gpt_with_entries(
+        &dev,
+        &[(type_guids::LINUX_FILESYSTEM, [1u8; 16], 34, 4095, "cut")],
+    );
+    dev.truncate(1024 * 1024);
+    let handle = fs_core::ffi::FsCoreDevice::into_handle(Arc::new(dev));
+
+    let mut list: *mut PartitionList = ptr::null_mut();
+    assert_eq!(
+        unsafe { partitions_probe(handle, &mut list) },
+        fs_core::ffi::FsCoreErrorCode::Ok
+    );
+    let mut info = std::mem::MaybeUninit::<PartitionInfo>::uninit();
+    assert_eq!(
+        unsafe { partitions_get(list, 0, info.as_mut_ptr()) },
+        fs_core::ffi::FsCoreErrorCode::Ok
+    );
+    let info = unsafe { info.assume_init() };
+    assert_eq!(info.length, (4095 - 34 + 1) * 512, "the claim is reported");
+    assert_eq!(
+        info.available_length,
+        1024 * 1024 - 34 * 512,
+        "and so is what the device holds"
+    );
+
+    let slice = unsafe { partitions_open_slice(list, 0) };
+    assert!(!slice.is_null(), "a sound entry still opens");
+    assert_eq!(
+        unsafe { fs_core::ffi::fs_core_device_size_bytes(slice) },
+        info.available_length,
+        "the slice is exactly the length reported as available"
+    );
+
+    unsafe { fs_core::ffi::fs_core_device_close(slice) };
+    unsafe { partitions_list_free(list) };
+    unsafe { fs_core::ffi::fs_core_device_close(handle) };
 }
