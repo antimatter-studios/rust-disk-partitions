@@ -65,6 +65,10 @@ never does.
 
 ### Fixed
 
+- **The fuzz manifest uses the same am-fs-core release as the main crate.**
+  A CI guard checks every declared pin and names any file left behind by a
+  future version bump (#135).
+
 - **An MBR commit keeps the boot code and the disk identifier.**
   `write_mbr_preserving` built a fresh all-zero sector, so a probe-then-commit
   that edited nothing zeroed bytes 0..446 of LBA 0: the boot code a BIOS

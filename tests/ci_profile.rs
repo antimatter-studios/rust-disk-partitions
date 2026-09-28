@@ -84,6 +84,93 @@ fn read_or_panic(path: &Path) -> String {
     })
 }
 
+/// The independent declarations of the am-fs-core version. The site count
+/// matters: removing a declaration must not leave a vacuous agreement.
+const FS_CORE_PIN_SITES: &[(&str, usize)] = &[
+    ("Cargo.toml", 1),
+    ("fuzz/Cargo.toml", 1),
+    (".github/workflows/ci.yml", 3),
+    (".github/workflows/fuzz.yml", 1),
+    (".github/workflows/release.yml", 1),
+];
+
+fn fs_core_versions_declared(text: &str) -> Vec<String> {
+    let mut versions = Vec::new();
+    for line in text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+    {
+        if line.contains("am-fs-core") {
+            if let Some(after) = line.split_once("version = \"") {
+                if let Some(version) = after.1.split('"').next().and_then(fs_core_version) {
+                    versions.push(version);
+                }
+            }
+        }
+        if let Some(after) = line.split_once("FS_CORE_REF:") {
+            if let Some(version) = fs_core_version(after.1.trim()) {
+                versions.push(version);
+            }
+        }
+        if line.contains("rust-fs-core") {
+            if let Some(after) = line.split_once("--branch ") {
+                if let Some(version) = after.1.split_whitespace().next().and_then(fs_core_version) {
+                    versions.push(version);
+                }
+            }
+        }
+    }
+    versions
+}
+
+fn fs_core_version(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_matches(['"', '\'']);
+    let value = value.strip_prefix('v').unwrap_or(value);
+    let parts: Vec<&str> = value.split('.').collect();
+    (parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())))
+    .then(|| value.to_string())
+}
+
+#[test]
+fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
+    let root = manifest_dir();
+    let mut declarations = Vec::new();
+    for &(file, expected_sites) in FS_CORE_PIN_SITES {
+        let versions = fs_core_versions_declared(&read_or_panic(&root.join(file)));
+        assert_eq!(
+            versions.len(),
+            expected_sites,
+            "{file}: expected {expected_sites} am-fs-core pin declarations, found {versions:?}; update the guard if a declaration moved"
+        );
+        declarations.extend(versions.into_iter().map(|version| (file, version)));
+    }
+    let agreed = &declarations[0].1;
+    for (file, version) in &declarations {
+        assert_eq!(
+            version, agreed,
+            "{file}: am-fs-core pin {version} disagrees with {}: {agreed}",
+            declarations[0].0
+        );
+    }
+}
+
+#[test]
+fn fs_core_pin_reader_finds_each_spelling_without_counting_comments_or_variables() {
+    let declarations = "am-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n\
+FS_CORE_REF: v0.2.13\n\
+run: git clone --branch v0.2.13 https://example.test/rust-fs-core.git\n\
+run: git clone --branch \"$FS_CORE_REF\" https://example.test/rust-fs-core.git\n\
+# run: git clone --branch v0.2.10 https://example.test/rust-fs-core.git\n";
+    assert_eq!(
+        fs_core_versions_declared(declarations),
+        vec!["0.2.13", "0.2.13", "0.2.13"]
+    );
+}
+
 /// The command lines of a shell script, with comments removed.
 ///
 /// ONE PLACE, because two callers used to disagree about what a
