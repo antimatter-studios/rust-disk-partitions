@@ -87,7 +87,11 @@ fn targets() -> Vec<Target> {
             name: "mbr",
             run: |b| {
                 let sector = as_sector(b);
-                let _ = partitions::mbr::parse(&sector);
+                // Both device sizes: 0 is a device that stated nothing
+                // about itself, and the fuzzed one exercises the clamp
+                // that fills `available_length` (#38).
+                let _ = partitions::mbr::parse(&sector, 0);
+                let _ = partitions::mbr::parse(&sector, fuzzed_device_size(&sector));
                 let _ = partitions::mbr::is_protective(&sector);
                 let _ = partitions::mbr::has_gpt_marker(&sector);
             },
@@ -115,6 +119,15 @@ fn targets() -> Vec<Target> {
 /// sector is what a device hands back -- there is no such thing as a
 /// three-byte MBR. Both tiers normalise the same way so a corpus entry
 /// means the same thing to each.
+/// A device size taken from the case's own bytes, so the size the
+/// entries are compared against is fuzzed rather than fixed.
+///
+/// The same eight bytes the `mbr` fuzz target uses, so the explorer and
+/// this gate feed the decoder the same pair of sizes for a given case.
+fn fuzzed_device_size(sector: &[u8; partitions::SECTOR_SIZE_USIZE]) -> u64 {
+    u64::from_le_bytes(sector[..8].try_into().unwrap())
+}
+
 fn as_sector(data: &[u8]) -> [u8; partitions::SECTOR_SIZE_USIZE] {
     let mut sector = [0u8; partitions::SECTOR_SIZE_USIZE];
     let take = data.len().min(sector.len());

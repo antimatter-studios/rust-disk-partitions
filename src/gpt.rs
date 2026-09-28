@@ -518,6 +518,11 @@ fn parse_entry_array(dev: &dyn BlockRead, header: &Header) -> Result<(Vec<Partit
             // Filled in below, once every entry has been read: the
             // overlap rule is about the set, not the entry.
             issues: entry_issue::NONE,
+            // The device is already in hand here -- it is the one the
+            // entry array was just read through -- so the GPT side
+            // needs no plumbing to answer this (#38). `size` is
+            // `dev.size_bytes()`, read once above.
+            available_length: crate::probe::available_on_device(start, length, size),
         });
         spans.push((start_lba, end_lba));
     }

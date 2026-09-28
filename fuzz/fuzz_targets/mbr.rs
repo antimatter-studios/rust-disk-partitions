@@ -12,7 +12,12 @@ fuzz_target!(|data: &[u8]| {
     let take = data.len().min(sector.len());
     sector[..take].copy_from_slice(&data[..take]);
 
-    let _ = partitions::mbr::parse(&sector);
+    // Both device sizes: 0 is a device that stated nothing about
+    // itself, and the fuzzed one exercises the clamp that fills
+    // `available_length` (#38).
+    let device_size = u64::from_le_bytes(sector[..8].try_into().unwrap());
+    let _ = partitions::mbr::parse(&sector, 0);
+    let _ = partitions::mbr::parse(&sector, device_size);
     let _ = partitions::mbr::is_protective(&sector);
     let _ = partitions::mbr::has_gpt_marker(&sector);
 });

@@ -63,6 +63,30 @@ never does.
   and `partitions_table_source` returns the source as
   `PartitionsTableSource` (#30).
 
+- **A partition running past the end of the disk reports what is there as
+  well as what it claims.** `Partition` and the C ABI's `PartitionInfo`
+  gain `available_length`: the number of the partition's bytes the device
+  actually holds, equal to `length` on every disk that holds everything
+  its table describes. A `dd` that stopped early, an image copied off a
+  larger disk and a table left stale after a shrink all produce a table
+  that describes more disk than is there, and the claim used to be the
+  only answer available — while `partitions_open_slice` handed out a
+  device clamped to what was on it, so a caller sizing a buffer from
+  `length` met the difference as an unexpected short read several layers
+  later. Both numbers are now reported, because the claim is what says
+  how large the partition was when the table was written and the
+  available length is what can be read. A device that states no size at
+  all (a raw device node through `FileDevice`) has contradicted nothing,
+  so the two agree there (#38).
+
+  **Breaking, twice.** `Partition` has a new required field, so a struct
+  literal built outside this crate no longer compiles; and
+  `mbr::parse`/`mbr::parse_all_entries` take the device's size as a
+  second argument, having previously been handed a sector and nothing to
+  compare it against. `PartitionInfo` grows from 88 bytes to 96, which is
+  a C ABI break: a consumer must be rebuilt against the new
+  `include/partitions.h`.
+
 ### Fixed
 
 - **The fuzz manifest uses the same am-fs-core release as the main crate.**

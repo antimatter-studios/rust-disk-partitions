@@ -439,6 +439,7 @@ fn a_partition_whose_start_and_length_overflow_is_refused_not_wrapped() {
         uuid: Some([7u8; 16]),
         slot: None,
         issues: 0,
+        available_length: (1 << 63) + 512,
     });
 
     match set.add(None, ONE_MIB, PartitionTypeId::LinuxFilesystem, None) {
@@ -466,6 +467,7 @@ fn a_zero_length_partition_is_refused_not_underflowed() {
         uuid: Some([8u8; 16]),
         slot: None,
         issues: 0,
+        available_length: 0,
     });
 
     match set.add(None, ONE_MIB, PartitionTypeId::LinuxFilesystem, None) {
@@ -478,6 +480,7 @@ fn span_of(start: u64, length: u64) -> partitions::Result<(u64, u64)> {
     Partition {
         start,
         length,
+        available_length: length,
         kind: PartitionKind::Gpt {
             type_guid: type_guids::LINUX_FILESYSTEM,
             attributes: 0,
@@ -548,6 +551,7 @@ fn overflowing_gpt_partition() -> Partition {
         uuid: Some([9u8; 16]),
         slot: None,
         issues: 0,
+        available_length: 1024,
     }
 }
 
@@ -604,6 +608,7 @@ fn write_gpt_refuses_an_overflowing_span_beside_a_real_partition() {
         uuid: Some([3u8; 16]),
         slot: None,
         issues: 0,
+        available_length: 4 * ONE_MIB,
     };
     match partitions::gpt_write::write_gpt(&dev, &[sound, overflowing_gpt_partition()], [1u8; 16]) {
         Err(Error::Invalid(_)) => {}
@@ -631,6 +636,7 @@ fn write_mbr_refuses_a_span_that_leaves_a_u64() {
         uuid: None,
         slot: None,
         issues: 0,
+        available_length: 1024,
     };
     match partitions::mbr::write_mbr(&dev, &[p]) {
         Err(Error::Invalid(_)) => {}
@@ -761,6 +767,7 @@ fn gpt_partition(start: u64, length: u64, label: &str, uuid: u8, slot: Option<u3
     Partition {
         start,
         length,
+        available_length: length,
         kind: PartitionKind::Gpt {
             type_guid: type_guids::LINUX_FILESYSTEM,
             attributes: 0,
@@ -1272,6 +1279,7 @@ fn the_mbr_writer_counts_preserved_entries_against_the_four_slots() {
             uuid: None,
             slot: None,
             issues: 0,
+            available_length: ONE_MIB,
         });
     }
     match partitions::mbr::write_mbr_preserving(&dev, &parts, &reserved) {
@@ -1323,6 +1331,7 @@ fn build_gpt_shaped(dev: &MemDev, geometry: GptGeometry, start_lba: u64) {
         uuid: Some([0x5Au8; 16]),
         slot: Some(0),
         issues: 0,
+        available_length: 4 * ONE_MIB,
     };
     write_gpt_with_geometry(dev, &[p], [0x11u8; 16], geometry).unwrap();
 
@@ -1471,6 +1480,7 @@ fn build_gpt_shaped_declared(dev: &MemDev, geometry: GptGeometry, start_lba: u64
         uuid: Some([0x5Au8; 16]),
         slot: Some(0),
         issues: 0,
+        available_length: 4 * ONE_MIB,
     };
     write_gpt_with_geometry(dev, &[p], [0x11u8; 16], geometry).unwrap();
     let (entries, _, _, first, last) = gpt_shape(dev);
@@ -1925,6 +1935,7 @@ fn wide_entry_table(dev: &MemDev, count: usize) -> Vec<[u8; 16]> {
             uuid: Some(uuid),
             slot: Some(i as u32),
             issues: 0,
+            available_length: 4 * ONE_MIB,
         });
     }
     write_gpt_with_geometry(dev, &parts, [0x11u8; 16], geometry).expect("a 256-byte table");
@@ -1952,6 +1963,7 @@ fn find_free_does_not_move_its_cursor_back_over_a_nested_partition() {
         uuid: Some([uuid; 16]),
         slot: None,
         issues: 0,
+        available_length: (last - first + 1) * 512,
     };
     let mut set = PartitionSet::empty_gpt(DISK_64M);
     set.partitions.push(nested(2048, 10239, 1));
