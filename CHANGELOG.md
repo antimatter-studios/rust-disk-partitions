@@ -8,6 +8,22 @@ never does.
 
 ### Added
 
+- **The 4Kn refusal is checked against a disk somebody else wrote.**
+  `Error::UnsupportedSectorSize` — how a disk whose logical sectors are
+  4096 bytes is refused by name rather than reported as a corrupt table —
+  was asserted only against 4Kn headers this repository builds itself,
+  which is our writer against our reader and cannot catch a misreading.
+  The external-tool oracle could not cover it: `sfdisk --sector-size
+  4096` is the only way to put a 4Kn table in a plain file, that option
+  arrived in util-linux 2.40, and the CI runner ships 2.39.3.
+  `scripts/make-4kn-fixture.sh` writes `tests/images/4kn-gpt.img` with a
+  modern `sfdisk` and records that tool's own `--json` description beside
+  it, so the tool is recorded rather than required at test time — the
+  same arrangement `fuzz/corpus/` already uses. `tests/sector_size.rs`
+  holds this crate's refusal, and the image's bytes, to that record, on
+  every leg of the matrix rather than the one with util-linux (#123).
+
+
 - **One check gates a merge, and it stands for every job.** `ci.yml` grows an
   always-run `ci-ok` job that `needs:` every other job in the workflow and
   fails when any of them failed, was cancelled or was *skipped*, and
