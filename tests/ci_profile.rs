@@ -926,6 +926,16 @@ fn scan_shell(line: &str) -> ShellScan {
 /// script -- is not recognised and the command does not count, which is
 /// the strict direction.
 fn cargo_test_arguments(words: &[String]) -> Option<Vec<&str>> {
+    // A TIER WRAPPER IS NOT A DIFFERENT COMMAND (#127). Every tier is
+    // written as `scripts/tier.sh LABEL LOG MAX-LINES MAX-BYTES -- cargo
+    // test ...` since the output budget was adopted, and to this function
+    // that was a command named `bash` with no `cargo test` in it. The PR
+    // gate's debug run would have become invisible the moment the budget
+    // landed, and both workflow assertions would have failed pointing at a
+    // workflow that was fine.
+    if let Some(inner) = command_after_the_tier_wrapper(words) {
+        return cargo_test_arguments(inner);
+    }
     let mut words = words
         .iter()
         .map(String::as_str)
@@ -955,6 +965,56 @@ fn cargo_test_arguments(words: &[String]) -> Option<Vec<&str>> {
         arguments.push(word);
     }
     Some(arguments)
+}
+
+/// The command a tier wrapper was asked to run, if this is one.
+///
+/// `scripts/tier.sh LABEL LOG MAX-LINES MAX-BYTES -- COMMAND...` is the
+/// shape of every tier in `chores.yml` and in `ci.yml`. Everything before
+/// the first `--` belongs to the wrapper -- a label, a log name and the two
+/// budgets -- and everything after it is the command it runs, which is what
+/// every rule in this file is actually about.
+///
+/// THE WRAPPER IS RECOGNISED AS THE PROGRAM, NOT AS A WORD. A line that
+/// merely names `scripts/tier.sh` -- an echoed command, a path in a message
+/// -- is not an invocation of it, for the same reason
+/// `an_echoed_command_is_not_a_run` exists: matching a substring is what
+/// let a printed command satisfy a guard about a run.
+///
+/// It does NOT change what any rule decides about the inner command. A
+/// `--release` run through the wrapper is still a release run; a run whose
+/// status the shell discards is still discarded, because that is decided by
+/// the separators around the whole invocation and the wrapper exits with
+/// the command's own status.
+fn command_after_the_tier_wrapper(words: &[String]) -> Option<&[String]> {
+    fn names_the_wrapper(word: &str) -> bool {
+        word == "tier.sh" || word.ends_with("/tier.sh")
+    }
+
+    // The same leading `env`/assignment skip `cargo_test_arguments` makes,
+    // so `EXPECT_OVERFLOW_CHECKS=1 bash scripts/tier.sh ...` is seen.
+    let mut index = 0;
+    while index < words.len()
+        && (words[index] == "env" || (!words[index].starts_with('-') && words[index].contains('=')))
+    {
+        index += 1;
+    }
+
+    let program = words.get(index)?;
+    if names_the_wrapper(program) {
+        index += 1;
+    } else if matches!(program.as_str(), "bash" | "sh" | "/bin/bash" | "/bin/sh") {
+        index += 1;
+        if !names_the_wrapper(words.get(index)?) {
+            return None;
+        }
+        index += 1;
+    } else {
+        return None;
+    }
+
+    let separator = words[index..].iter().position(|w| w == "--")?;
+    Some(&words[index + separator + 1..])
 }
 
 /// Cargo options that take their value as the NEXT argument.
@@ -2743,6 +2803,77 @@ cargo build --locked --release
             Vec::<String>::new(),
             "building a binary is not running a test suite"
         );
+    }
+
+    /// A TIER WRAPPER IS NOT A DIFFERENT COMMAND (#127).
+    ///
+    /// Every tier runs as `scripts/tier.sh LABEL LOG LINES BYTES -- cargo
+    /// test ...` so a green run prints a verdict instead of 289 `... ok`
+    /// lines. To a scan that reads the first word of the line, that is a
+    /// command named `bash`, and the debug run the whole file exists to
+    /// find disappears.
+    #[test]
+    fn a_debug_run_through_the_tier_wrapper_still_counts() {
+        for line in [
+            "bash scripts/tier.sh \"test (debug)\" debug 440 28000 -- cargo test --locked --all-targets",
+            "scripts/tier.sh test debug 440 28000 -- cargo test --locked --all-targets",
+            "bash ./scripts/tier.sh test debug 440 28000 -- cargo test --locked --all-targets",
+        ] {
+            assert_eq!(
+                runs_with_overflow_checks(line),
+                vec![line.to_string()],
+                "{line} runs the suite in debug through the tier wrapper"
+            );
+        }
+    }
+
+    /// And the wrapper does not launder a release run into a debug one.
+    #[test]
+    fn a_release_run_through_the_tier_wrapper_is_still_a_release_run() {
+        for line in [
+            "bash scripts/tier.sh \"test (release)\" release 440 28000 -- cargo test --locked --release --all-targets",
+            "bash scripts/tier.sh release release 440 28000 -- cargo test --locked -r --all-targets",
+        ] {
+            assert_eq!(
+                runs_with_overflow_checks(line),
+                Vec::<String>::new(),
+                "{line} is a release run whatever it is wrapped in"
+            );
+        }
+    }
+
+    /// Naming the wrapper is not invoking it, for the same reason
+    /// `an_echoed_command_is_not_a_run` exists.
+    #[test]
+    fn a_line_that_only_names_the_tier_wrapper_is_not_a_run() {
+        for line in [
+            "echo scripts/tier.sh label debug 440 28000 -- cargo test --locked --lib",
+            "echo \"bash scripts/tier.sh t debug 1 1 -- cargo test --locked --lib\"",
+            "cat scripts/tier.sh",
+        ] {
+            assert_eq!(
+                runs_with_overflow_checks(line),
+                Vec::<String>::new(),
+                "{line} names the wrapper; it does not run the suite"
+            );
+        }
+    }
+
+    /// A wrapped run whose status the shell throws away is still thrown
+    /// away: the wrapper exits with the command's own status, so nothing
+    /// about the separators around it changes.
+    #[test]
+    fn a_wrapped_run_whose_status_is_discarded_still_does_not_count() {
+        for line in [
+            "bash scripts/tier.sh t debug 440 28000 -- cargo test --locked --all-targets || true",
+            "bash scripts/tier.sh t debug 440 28000 -- cargo test --locked --all-targets | tee out.log",
+        ] {
+            assert_eq!(
+                runs_with_overflow_checks(line),
+                Vec::<String>::new(),
+                "{line} discards the suite's status"
+            );
+        }
     }
 
     /// A COMMAND WHOSE FAILURE IS DISCARDED IS NOT A GATE.

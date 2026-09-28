@@ -132,9 +132,73 @@ tasks:
     desc: Debug build
     cmds: ['cargo build']
 
+  # THE TIERS, THEIR BUDGETS AND THEIR FLOORS.
+  #
+  # A tier runs through scripts/tier.sh: the whole run goes to
+  # tmp/logs/<log>.log, a pass prints one verdict line naming it, and a run
+  # that passed but printed more than its budget fails with status 65. Before
+  # this, every green matrix leg replayed 289 `... ok` lines -- 1,236 across
+  # the three legs of a green run, and 4,262 lines over six jobs (#127).
+  #
+  # EVERY NUMBER BELOW WAS MEASURED, and the measurement is named beside it.
+  # Raise a budget deliberately, with the run that justifies it; lowering one
+  # to make a run fit is the defect the budget exists to catch. A floor only
+  # ever goes up.
+  #
+  #   tier     measured lines/bytes   budget         floor  measured tests
+  #   debug    348 / 21,640           440 / 28,000     258  293
+  #   release  351 / 21,849           440 / 28,000     258  293
+  #   oracle    14 /    667            40 /  3,000       9  9
+  #
+  # EVERY ROW WAS MEASURED IN CI, from the retained tier-logs-* artifacts of
+  # run 36411947701 on the branch for #127 -- the debug row from the largest
+  # of the three matrix legs (windows-latest; ubuntu and macOS were 21,604
+  # bytes). CI is the place to measure: its absolute paths are longer than a
+  # host's and a cold cargo cache prints a `Compiling` line per dependency
+  # into the same log, so a host measurement flatters the row. The host runs
+  # for comparison were 348 / 21,474 and 14 / 668, which is what the
+  # artefacts being kept is for.
+  #
+  # The budgets sit ~25% above the measurement rather than ~10%, so ordinary
+  # churn in the suite does not trip them while the transcript this replaced
+  # -- 289 `... ok` lines per leg, replayed unconditionally -- could not
+  # return unnoticed.
+  #
+  # The floors are scripts/test-floor.sh, not the budget: a budget fails a
+  # tier that PRINTS too much and cannot see a tier that RAN almost nothing.
+  # 258 is the floor CI has carried since #120, about 12% below the 293 this
+  # suite executes today; the oracle's is 9, which is every test in it,
+  # because each one is a whole table format or a whole direction and losing
+  # one is not churn.
+  #
+  # `test:scripts` has no budget and no floor on purpose: it prints one PASS
+  # line per check rather than cargo's `test result:` lines, so the floor
+  # would read zero for a tier that ran everything.
   test:
-    desc: Test suite
-    cmds: ['cargo test']
+    desc: The suite, in debug, where overflow checks are on
+    cmds:
+      - 'scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets'
+      - 'scripts/test-floor.sh debug 258'
+
+  test:release:
+    desc: The same suite in release, where arithmetic wraps instead of panicking
+    # Both profiles are run on purpose: arithmetic that panics in debug can
+    # wrap silently in release, and this crate's inputs are numbers off a
+    # disk. tests/ci_profile.rs holds the debug run to being a debug run.
+    cmds:
+      - 'scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets'
+      - 'scripts/test-floor.sh release 258'
+
+  test:oracle:
+    desc: This crate's tables against sgdisk, sfdisk, blkid and partx
+    # THE ONLY CHECK HERE THAT IS NOT THIS CRATE MARKING ITS OWN HOMEWORK.
+    # Behind the `oracle` feature because the target refuses to skip when a
+    # tool is missing, and the macOS and Windows CI legs have none of them.
+    # `--nocapture` is what lets each test's comparison count out of the
+    # harness and into the log, where the second floor in ci.yml reads it.
+    cmds:
+      - 'scripts/tier.sh "test (oracle)" oracle 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture'
+      - 'scripts/test-floor.sh oracle 9'
 
   clean:
     desc: Remove this crate's cargo output

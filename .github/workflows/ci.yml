@@ -30,91 +30,84 @@ jobs:
         run: cargo build --locked --all-targets
       - name: test
         # `shell: bash` IS LOAD BEARING ON THE WINDOWS LEG. The default
-        # shell there is pwsh, which has no `trap ... EXIT` and no
-        # `[ ]`, so the floor below would be a syntax error on a third
-        # of this matrix. ubuntu and macOS already default to bash;
-        # saying it here keeps all three legs running one script.
+        # shell there is pwsh, which cannot run the tier wrapper at all;
+        # ubuntu and macOS already default to bash, and saying it here
+        # keeps all three legs running one script.
         shell: bash
+        # A VERDICT, NOT A TRANSCRIPT (#127). This step used to capture
+        # the run by redirection and then `cat` the whole log back from a
+        # trap, unconditionally -- so the capture bought nothing and every
+        # green leg replayed 289 `... ok` lines, 1,236 of them across this
+        # matrix on every green run. scripts/tier.sh runs the suite
+        # QUIETLY: the whole run goes to tmp/logs/debug.log, a pass prints
+        # one verdict line naming it, and a run that passed but printed
+        # more than its budget fails with status 65. The logs are uploaded
+        # below, so the detail is never lost -- reading it is a choice
+        # rather than a toll.
+        #
+        # THE BUDGET IS NOT A CI RULE. The same task with the same budget
+        # is what `chore test` runs on a laptop, because a rule only CI
+        # enforces is one the tree drifts away from between pull requests.
+        # The numbers are measured and live in chores.yml beside the task.
+        #
+        # NOT PIPED INTO ANYTHING. Actions runs a `run:` block as bash with
+        # `-e`, where a pipeline's status is its LAST member's, so
+        # `cargo test ... | tee log` exits 0 with the suite red.
+        # tests/ci_profile.rs refuses that spelling and is right to: a
+        # capture that swallows the result is worse than no capture. The
+        # wrapper exits with the command's own status and nothing follows
+        # it on the line.
+        #
         # EXPECT_OVERFLOW_CHECKS ARMS THE ONE CHECK A TEXT SCAN CANNOT DO.
         # This run has no `--release`, so overflow-checks are on, and it
         # is what makes every arithmetic test in this crate mean anything.
-        #
         # The variable tells `overflow_checks::the_build_the_gate_asked_to
         # _check_does_check` in src/lib.rs that THIS is the run that must
         # trap an overflow -- asking the build directly rather than
         # inferring it from which spellings of "disabled" happen to be
         # absent from Cargo.toml. It is declared as an `env:` mapping
         # rather than inline as `VAR=1 cargo test` because this job also
-        # runs on windows-latest, where that prefix is a PowerShell
-        # syntax error.
+        # runs on windows-latest, where that prefix is a PowerShell syntax
+        # error.
         #
         # Do not add `--release` to this run, and do not drop the
         # variable: tests/ci_profile.rs reads this file and fails if no
         # `cargo test` in it runs without `--release` while setting this.
-        # See #86.
+        # It reads through the tier wrapper to find it. See #86, #127.
+        #
+        # THE FLOOR IS A SEPARATE SCRIPT, BECAUSE THE FAILURE MODE HERE IS
+        # AN ABSENCE. This job reports green on `0 passed; 0 failed`
+        # exactly as loudly as on the whole suite: cargo exits 0 when a
+        # filter selects nothing, when a target list comes out empty, and
+        # when no test binary was built at all. Only a count can see it,
+        # and the budget cannot -- a tier that ran nothing prints less,
+        # not more. scripts/test-floor.sh reads the tier's log and fails
+        # below 258; 293 executed on 2026-09-28, and the floor moves up
+        # with the suite and never down.
+        #
+        # The `oracle (external tools)` job's tests are NOT in that
+        # number: their target carries `required-features = ["oracle"]`,
+        # so `--all-targets` here does not build it. That job has its own
+        # tier and its own floor.
         run: |
-          # The output is captured by REDIRECTION AND REPLAYED BY A
-          # TRAP, not by `cargo test | tee`, and the difference is the
-          # whole point of the step. Actions runs a `run:` block as bash
-          # with `-e`, where a pipeline's status is its LAST member's,
-          # so `cargo test ... | tee log` exits 0 with the suite red --
-          # the step would report green while the gate this job exists
-          # to be was blind. tests/ci_profile.rs refuses that spelling
-          # for exactly that reason, and the refusal is correct: a
-          # capture that swallows the result is worse than no capture.
-          # `set +e` around it is refused for the same reason and would
-          # be the same defect. So the suite's status is read by the
-          # shell, unmodified, and the log is a file.
-          trap 'cat "$RUNNER_TEMP/test.log"' EXIT
-          cargo test --locked --all-targets > "$RUNNER_TEMP/test.log" 2>&1
-          # A FLOOR, BECAUSE THE FAILURE MODE HERE IS AN ABSENCE. This
-          # job reports green on `0 passed; 0 failed` exactly as loudly
-          # as it does on the whole suite: cargo exits 0 when a filter
-          # selects nothing, when a target list comes out empty, and
-          # when the workspace built no test binaries at all. Nothing in
-          # a pass/fail gate can see the difference, because there is no
-          # failure to see. Only a count can.
-          #
-          # Measured 2026-09-18 on the branch for #119: 284 executed,
-          # across eight binaries (37, 7, 5, 94, 54, 12, 72, 3) and with
-          # `0 filtered out` everywhere. That is 276 (run 35176029936,
-          # main, b9a9d82) plus the eight regression tests the external
-          # -tool oracle's findings brought with them -- restated as
-          # ordinary tests so they run on macOS and Windows too, where
-          # the oracle cannot. The floor is 258, about 9% below, so
-          # ordinary churn in the suite does not trip it while the
-          # collapse it is aimed at -- a whole binary, or the whole run,
-          # going missing -- does. It moves up with the suite and never
-          # down.
-          #
-          # The `oracle (external tools)` job's own tests are NOT in
-          # this number: their target carries `required-features =
-          # ["oracle"]`, so `--all-targets` here does not build it. That
-          # job counts its own.
-          #
-          # ONE FLOOR IS ENOUGH HERE ONLY BECAUSE THIS JOB MAKES ONE
-          # SELECTION. There is no `-- --ignored` pass and no `#[ignore]`
-          # in the crate, so every test the job can run is in this
-          # number. Add a second `cargo test` selecting differently and
-          # it needs its own floor: two disjoint selections can empty
-          # independently, and a shared total hides the one that did.
-          #
-          # One `awk` rather than `grep | awk`: the runner's bash has
-          # `pipefail`, so on the one input that matters most -- a log
-          # with no `test result:` line in it -- grep exits 1, the
-          # assignment fails, `-e` abandons the step, and the floor
-          # never gets to say what happened. `match`/`RSTART` is POSIX
-          # and behaves the same on the macOS and Windows runners.
-          n=$(awk 'match($0, /test result: ok\. [0-9]+ passed/) { hit = substr($0, RSTART, RLENGTH); split(hit, f, " "); s += f[4] } END { print s+0 }' "$RUNNER_TEMP/test.log")
-          echo "tests executed: $n (floor 258)"
-          if [ "$n" -lt 258 ]; then
-              echo "::error::only $n tests executed, floor is 258 -- 284 ran on 2026-09-18, and a run that executes fewer than that stopped early rather than passed"
-              exit 1
-          fi
+          bash scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets
+          bash scripts/test-floor.sh debug 258
         env:
           EXPECT_OVERFLOW_CHECKS: "1"
       - name: clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: keep the tier logs
+        # `if: always()`, because the run worth reading is the one that
+        # failed. A quiet tier is only honest if the detail it did not
+        # print is still retrievable. One artefact per matrix leg: three
+        # uploads under one name is an error, and a leg's log is the one
+        # thing that distinguishes it.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-debug-${{ matrix.os }}
+          path: tmp/logs/
+          if-no-files-found: warn
 
   # The debug profile turns integer overflow into a panic; the release
   # profile, which is what ships, lets it wrap. A guard against a
@@ -135,31 +128,26 @@ jobs:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
       - name: test --release
+        shell: bash
+        # Through the same wrapper, under the same budget, with its own
+        # log and its own floor: the release build produces its own test
+        # binaries, and a release run that collapsed to nothing while the
+        # debug legs stayed whole would be invisible to a count taken in
+        # the other job. See the debug step above for why the output is a
+        # verdict rather than a transcript.
         run: |
-          # Captured by redirection and replayed by a trap rather than
-          # piped into `tee`, for the reason spelled out in the debug
-          # job above: under `bash -e` a pipeline's status is its last
-          # member's, and a capture that swallows the suite's result
-          # turns this job green on a red suite.
-          trap 'cat "$RUNNER_TEMP/test.log"' EXIT
-          cargo test --locked --release --all-targets > "$RUNNER_TEMP/test.log" 2>&1
-          # The same floor, and this job has its own because it is its
-          # own selection: the release build produces its own test
-          # binaries, and a release run that collapsed to nothing while
-          # the debug legs stayed whole would be invisible to a count
-          # taken in the other job.
-          #
-          # Measured 2026-09-18 on the branch for #119: 284 executed --
-          # the same count as the debug legs, which is what makes this a
-          # real second pass over the suite rather than a subset of it.
-          # Floor 258, about 9% below. It moves up with the suite and
-          # never down.
-          n=$(awk 'match($0, /test result: ok\. [0-9]+ passed/) { hit = substr($0, RSTART, RLENGTH); split(hit, f, " "); s += f[4] } END { print s+0 }' "$RUNNER_TEMP/test.log")
-          echo "tests executed: $n (floor 258)"
-          if [ "$n" -lt 258 ]; then
-              echo "::error::only $n tests executed, floor is 258 -- 284 ran on 2026-09-18, and a run that executes fewer than that stopped early rather than passed"
-              exit 1
-          fi
+          bash scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets
+          bash scripts/test-floor.sh release 258
+      - name: keep the tier logs
+        # `if: always()`, because the run worth reading is the one that
+        # failed. A quiet tier is only honest if the detail it did not
+        # print is still retrievable.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-release
+          path: tmp/logs/
+          if-no-files-found: warn
 
   # THE ONLY CHECK IN THIS REPOSITORY THAT IS NOT THIS CRATE MARKING ITS
   # OWN HOMEWORK.
@@ -203,62 +191,55 @@ jobs:
           sfdisk --version
       - name: test the oracle
         shell: bash
+        # A VERDICT, NOT A TRANSCRIPT -- this job was already the one that
+        # got that right by hand, trapping a `tail -n 60` on failure only.
+        # It goes through scripts/tier.sh now for the same reason as every
+        # other tier: one implementation, a budget that is measured and
+        # written down beside the task in chores.yml, and the same
+        # behaviour on a laptop as in CI. The oracle makes ~780 field
+        # comparisons; a line each would be exactly the failure mode the
+        # budget exists for. The detail lives in the assertion message,
+        # which names the image, the partition, the field, our value and
+        # the tool's.
+        #
+        # `--quiet` drops cargo's per-test name lines and `--nocapture`
+        # lets the per-test comparison counts out, so the log a green run
+        # leaves is ten counts and a result line.
+        #
+        # TWO FLOORS, AND THIS JOB NEEDS THEM MOST OF ALL. Its whole
+        # subject is a comparison that can quietly stop happening: a tool
+        # whose output format moved, a target that stopped being built, a
+        # feature that stopped being passed. Every one of those ends in
+        # `0 passed; 0 failed`, which cargo exits 0 on.
+        #
+        # The first is on tests executed -- scripts/test-floor.sh, 9,
+        # which is every test in the target rather than a percentage below
+        # it: each one is a whole table format or a whole direction, and
+        # losing any one is not churn.
+        #
+        # The second is on FIELD comparisons, summed from the counts each
+        # test prints into the tier's log. Each test already asserts its
+        # own floor (`Comparisons::floor`), so this total cannot silently
+        # fall; it is here because it is the number that says what the job
+        # did, and because it turns nine separate floors into one line a
+        # reader can check. Measured 2026-09-28: 775. Floor 700, about 10%
+        # below.
         run: |
-          # A VERDICT, NOT A TRANSCRIPT. The whole log is kept in a file
-          # and only the tail of it is printed, and only when something
-          # failed; a green run prints the ten summary lines the suite
-          # itself emits and one total. The reason is the one written up
-          # in fs-linux-test-harness's scripts/output-budget.sh: a
-          # passing run that prints hundreds of lines hides the handful
-          # that matter, and every reader pays for it -- a person
-          # scrolling, the log viewer, and an agent working here, which
-          # re-reads its transcript on every step. The oracle makes ~780
-          # field comparisons; a line each would be exactly the failure
-          # mode that document is about. The detail lives in the
-          # assertion message, which names the image, the partition, the
-          # field, our value and the tool's.
-          #
-          # Redirected and replayed by a trap, not piped into `tee`, for
-          # the reason spelled out on the `test` job above: under
-          # `bash -e` a pipeline's status is its last member's, and a
-          # capture that swallows the suite's result turns this job
-          # green on a red suite. The trap re-raises the status it
-          # caught so that stays true.
-          trap 'rc=$?; [ "$rc" -eq 0 ] || { echo "--- last 60 lines of $RUNNER_TEMP/oracle.log ---"; tail -n 60 "$RUNNER_TEMP/oracle.log"; }; exit "$rc"' EXIT
-          # `--nocapture` is what lets the per-test summary lines out;
-          # `--quiet` drops cargo's per-test name lines, so the visible
-          # output of a green run is ten counts and a result line.
-          cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture > "$RUNNER_TEMP/oracle.log" 2>&1
-          grep -E 'comparisons \(floor|test result:' "$RUNNER_TEMP/oracle.log" || true
-          # TWO FLOORS, AND THIS JOB NEEDS THEM MOST OF ALL. Its whole
-          # subject is a comparison that can quietly stop happening: a
-          # tool whose output format moved, a target that stopped being
-          # built, a feature that stopped being passed. Every one of
-          # those ends in `0 passed; 0 failed`, which cargo exits 0 on.
-          #
-          # The first floor is on tests executed. Measured 2026-09-18 on
-          # this branch: 9 executed. The floor is 9 rather than a
-          # percentage below it, because there are nine tests and each
-          # is a whole direction or a whole table format -- losing any
-          # one is not churn.
-          n=$(awk 'match($0, /test result: ok\. [0-9]+ passed/) { hit = substr($0, RSTART, RLENGTH); split(hit, f, " "); s += f[4] } END { print s+0 }' "$RUNNER_TEMP/oracle.log")
-          if [ "$n" -lt 9 ]; then
-              echo "::error::only $n oracle tests executed, floor is 9 -- 9 ran on 2026-09-18, and a run that executes fewer than that compared this crate against fewer readers than it was asked to"
-              exit 1
-          fi
-          # The second is on FIELD comparisons, summed from the counts
-          # each test prints. Each test already asserts its own floor
-          # (`Comparisons::floor`), so this total cannot silently fall;
-          # it is here because it is the number that says what the job
-          # did, and because it turns the ten separate floors into one
-          # line a reader can check. Measured 2026-09-18: 775.
-          # Floor 700, about 10% below.
-          f=$(awk 'match($0, /: [0-9]+ comparisons \(floor/) { hit = substr($0, RSTART, RLENGTH); split(hit, g, " "); s += g[2] } END { print s+0 }' "$RUNNER_TEMP/oracle.log")
-          echo "oracle: $n tests, $f field comparisons against sgdisk/sfdisk/blkid/partx (floors 9, 700)"
+          bash scripts/tier.sh "test (oracle)" oracle 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture
+          bash scripts/test-floor.sh oracle 9
+          f=$(awk 'match($0, /: [0-9]+ comparisons \(floor/) { hit = substr($0, RSTART, RLENGTH); split(hit, g, " "); s += g[2] } END { print s+0 }' tmp/logs/oracle.log)
+          echo "oracle: $f field comparisons against sgdisk/sfdisk/blkid/partx (floor 700)"
           if [ "$f" -lt 700 ]; then
-              echo "::error::only $f field comparisons ran, floor is 700 -- 775 ran on 2026-09-18, and a run that compares fewer has stopped finding fields rather than stopped disagreeing"
+              echo "::error::only $f field comparisons ran, floor is 700 -- 775 ran on 2026-09-28, and a run that compares fewer has stopped finding fields rather than stopped disagreeing"
               exit 1
           fi
+      - name: keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-oracle
+          path: tmp/logs/
+          if-no-files-found: warn
       # `--all-targets` in the `test` job does not build the oracle
       # target, because its feature is off there. This is the only job
       # that can lint it.
