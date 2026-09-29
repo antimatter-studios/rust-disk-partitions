@@ -6,6 +6,57 @@ never does.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-29
+
+### Changed — breaking, and this is why the minor moved
+
+Everything in this section has been on `main` since `v0.4.1` without the
+version moving, which is what made it findable only by building a
+consumer against a sibling checkout (#74, #131). The list was produced by
+diffing the public surface against the `v0.4.1` tag rather than from
+memory, because the two structs a consumer builds with a struct literal
+took **six** required-field additions between them, not the four that
+were first reported.
+
+- **`Partition` has three new required fields.** `slot` (the table slot
+  an entry came from), `issues` (which of the table's own rules the entry
+  breaks) and `available_length` (how much of the partition the device
+  actually holds, #38). The fields are public, the struct has no
+  `Default` and no constructor, so every `Partition { .. }` literal built
+  outside this crate must name them.
+
+- **`PartitionSet` has three new required fields**, and they were the
+  half nobody had counted: `gpt_entry_tails` (the vendor bytes past the
+  standard 128 of each entry, carried across a rewrite), `gpt_geometry`
+  (the entry-array geometry a probed table is written back with) and
+  `reserved` (the MBR entries that are not volumes and must go back into
+  the slots they came from). A downstream `PartitionSet { .. }` literal
+  breaks exactly as a `Partition` one does.
+
+- **`mbr::parse` takes the device's size as a second argument.** It was
+  handed a sector and nothing to compare its entries against, so it could
+  not say how much of a partition is on the device (#38).
+  `mbr::parse_all_entries`, added in this release, takes it too.
+
+- **`Error` has a new variant, `UnsupportedSectorSize`.** A downstream
+  `match` over `Error` with no wildcard arm no longer compiles. The
+  variant is how a 4Kn disk is refused by name rather than reported as a
+  corrupt table.
+
+- **The C ABI's `PartitionInfo` is 96 bytes, up from 80 at `v0.4.1`**,
+  having gained `slot` (+ four bytes of padding, 88), `issues` (into that
+  padding, still 88) and `available_length` (96). No existing field moved
+  at any step. `include/partitions.h` carries all three and
+  `tests/c_abi.rs` compiles the header against the Rust struct with a C
+  compiler, so the two cannot drift — but **a C consumer must be
+  rebuilt**, and one that builds a `PartitionInfo` by hand must fill the
+  new fields in.
+
+`rust-blk-probe` is the known consumer that does not build against this
+crate's `main` because of the above (`missing fields issues and slot in
+initializer of PartitionInfo`); its pin moves to 0.5.0 in lockstep with
+this release.
+
 ### Changed
 
 - **A tier prints a verdict, not a transcript.** Every green matrix leg
@@ -460,7 +511,9 @@ never does.
 
 - Initial release: MBR and GPT partition-table probing.
 
-[Unreleased]: https://github.com/antimatter-studios/rust-partitions/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/antimatter-studios/rust-partitions/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/antimatter-studios/rust-partitions/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/antimatter-studios/rust-partitions/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/antimatter-studios/rust-partitions/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/antimatter-studios/rust-partitions/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/antimatter-studios/rust-partitions/compare/v0.3.2...v0.3.3
