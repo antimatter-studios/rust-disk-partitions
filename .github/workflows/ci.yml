@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone am-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.2.13 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.2.16 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -88,7 +88,7 @@ jobs:
         # filter selects nothing, when a target list comes out empty, and
         # when no test binary was built at all. Only a count can see it,
         # and the budget cannot -- a tier that ran nothing prints less,
-        # not more. scripts/test-floor.sh reads the tier's log and fails
+        # not more. scripts/core.sh test-floor reads the tier's log and fails
         # below 258; 293 executed on 2026-09-28, and the floor moves up
         # with the suite and never down.
         #
@@ -98,7 +98,7 @@ jobs:
         # tier and its own floor.
         run: |
           bash scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets
-          bash scripts/test-floor.sh debug 258
+          bash scripts/core.sh test-floor debug 258
         env:
           EXPECT_OVERFLOW_CHECKS: "1"
       - name: clippy
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone am-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.2.13 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.2.16 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -144,7 +144,7 @@ jobs:
         # verdict rather than a transcript.
         run: |
           bash scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets
-          bash scripts/test-floor.sh release 258
+          bash scripts/core.sh test-floor release 258
       - name: keep the tier logs
         # `if: always()`, because the run worth reading is the one that
         # failed. A quiet tier is only honest if the detail it did not
@@ -180,7 +180,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone am-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.2.13 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.2.16 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -233,7 +233,7 @@ jobs:
         # below.
         run: |
           bash scripts/tier.sh "test (oracle)" oracle 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture
-          bash scripts/test-floor.sh oracle 9
+          bash scripts/core.sh test-floor oracle 9
           f=$(awk 'match($0, /: [0-9]+ comparisons \(floor/) { hit = substr($0, RSTART, RLENGTH); split(hit, g, " "); s += g[2] } END { print s+0 }' tmp/logs/oracle.log)
           echo "oracle: $f field comparisons against sgdisk/sfdisk/blkid/partx (floor 700)"
           if [ "$f" -lt 700 ]; then
@@ -284,6 +284,12 @@ jobs:
             bash "$t"
             echo "::endgroup::"
           done
+      # The family scripts are rust-fs-core's alone: this fails if a copy of
+      # one is committed here, scripts/core.sh differs from core's, or
+      # anything here still calls a local copy.
+      - name: no copy of a rust-fs-core family script
+        shell: bash
+        run: bash scripts/core.sh family-check
 
   semver:
     # `chore check:semver`, spelled out because CI here does not install chore: this tree's public API against the newest
@@ -304,7 +310,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone am-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.2.13 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.2.16 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -314,7 +320,7 @@ jobs:
           tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
       - name: semver (quiet, budgeted)
         shell: bash
-        run: bash scripts/tier.sh semver semver 40 4000 -- scripts/semver-check.sh
+        run: bash scripts/tier.sh semver semver 40 4000 -- bash scripts/core.sh semver-check
 
   ci-ok:
     name: ci-ok

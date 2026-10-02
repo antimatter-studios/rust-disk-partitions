@@ -19,9 +19,9 @@
 # budget nobody can breach measures nothing, and one lowered to fit is the
 # defect it exists to catch.
 #
-# THE FLOOR IS scripts/test-floor.sh, not this script. A budget fails a tier
-# that PRINTS too much; nothing here fails a tier that printed almost nothing
-# because it RAN almost nothing.
+# THE FLOOR IS rust-fs-core's (scripts/core.sh test-floor), not this
+# script. A budget fails a tier that PRINTS too much; nothing here fails a
+# tier that printed almost nothing because it RAN almost nothing.
 #
 # VERBOSE. `OUTPUT_BUDGET_VERBOSE=1`, or `--verbose`/`-v` in the chore
 # invocation's CLI_ARGS (`chore test -- --verbose`), streams the run as it

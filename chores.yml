@@ -178,7 +178,7 @@ tasks:
     desc: The suite, in debug, where overflow checks are on
     cmds:
       - 'scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets'
-      - 'scripts/test-floor.sh debug 258'
+      - 'bash scripts/core.sh test-floor debug 258'
 
   test:release:
     desc: The same suite in release, where arithmetic wraps instead of panicking
@@ -187,7 +187,7 @@ tasks:
     # disk. tests/ci_profile.rs holds the debug run to being a debug run.
     cmds:
       - 'scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets'
-      - 'scripts/test-floor.sh release 258'
+      - 'bash scripts/core.sh test-floor release 258'
 
   test:oracle:
     desc: This crate's tables against sgdisk, sfdisk, blkid and partx
@@ -198,7 +198,7 @@ tasks:
     # harness and into the log, where the second floor in ci.yml reads it.
     cmds:
       - 'scripts/tier.sh "test (oracle)" oracle 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture'
-      - 'scripts/test-floor.sh oracle 9'
+      - 'bash scripts/core.sh test-floor oracle 9'
 
   clean:
     desc: Remove this crate's cargo output
@@ -256,7 +256,7 @@ tasks:
     # room for a warning block without hiding a flood. No floor: it is one
     # check, not a suite.
     cmds:
-      - 'bash scripts/tier.sh semver semver 40 4000 -- scripts/semver-check.sh'
+      - 'bash scripts/tier.sh semver semver 40 4000 -- bash scripts/core.sh semver-check'
 
   check:ci-gate:
     desc: The one required check stands for every job in ci.yml
