@@ -49,13 +49,17 @@ It does **not** mount anything, decode files, or write — it's a probe.
 ## Use
 
 ```rust
-use partitions::{probe, sniff, BlockRead, FileBlock};
+use partitions::{probe, sniff, FileBlock};
 
-let dev = FileBlock::open("disk.img")?;
-let parts = probe(&dev)?;
-for p in &parts {
-    let kind = sniff(&dev, p)?;
-    println!("{} bytes @ {} -> {:?}", p.length, p.start, kind);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let dev = FileBlock::open("disk.img")?;
+    let (table, parts) = probe(&dev)?;
+    println!("{table:?}");
+    for p in &parts {
+        let kind = sniff(&dev, p)?;
+        println!("{} bytes @ {} -> {:?}", p.length, p.start, kind);
+    }
+    Ok(())
 }
 ```
 
