@@ -89,7 +89,7 @@ fn read_or_panic(path: &Path) -> String {
 const FS_CORE_PIN_SITES: &[(&str, usize)] = &[
     ("Cargo.toml", 1),
     ("fuzz/Cargo.toml", 1),
-    (".github/workflows/ci.yml", 3),
+    (".github/workflows/ci.yml", 4),
     (".github/workflows/fuzz.yml", 1),
     (".github/workflows/release.yml", 1),
 ];
