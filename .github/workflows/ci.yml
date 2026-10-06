@@ -97,7 +97,7 @@ jobs:
         # so `--all-targets` here does not build it. That job has its own
         # tier and its own floor.
         run: |
-          bash scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets
+          bash scripts/tier.sh "test (debug)" debug 520 30000 -- cargo test --locked --all-targets
           bash scripts/core.sh test-floor debug 258
         env:
           EXPECT_OVERFLOW_CHECKS: "1"
@@ -143,7 +143,7 @@ jobs:
         # the other job. See the debug step above for why the output is a
         # verdict rather than a transcript.
         run: |
-          bash scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets
+          bash scripts/tier.sh "test (release)" release 520 30000 -- cargo test --locked --release --all-targets
           bash scripts/core.sh test-floor release 258
       - name: keep the tier logs
         # `if: always()`, because the run worth reading is the one that

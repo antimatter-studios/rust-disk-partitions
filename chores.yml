@@ -174,10 +174,13 @@ tasks:
   # `test:scripts` has no budget and no floor on purpose: it prints one PASS
   # line per check rather than cargo's `test result:` lines, so the floor
   # would read zero for a tier that ran everything.
+  # BUDGET: 491 lines, 28333 bytes measured in release once the crate moved
+  # to rust-fs-core 0.3.0 (run 37439858374); both profiles print the same
+  # shape, so both carry 520 lines and 30000 bytes.
   test:
     desc: The suite, in debug, where overflow checks are on
     cmds:
-      - 'scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets'
+      - 'scripts/tier.sh "test (debug)" debug 520 30000 -- cargo test --locked --all-targets'
       - 'bash scripts/core.sh test-floor debug 258'
 
   test:release:
@@ -186,7 +189,7 @@ tasks:
     # wrap silently in release, and this crate's inputs are numbers off a
     # disk. tests/ci_profile.rs holds the debug run to being a debug run.
     cmds:
-      - 'scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets'
+      - 'scripts/tier.sh "test (release)" release 520 30000 -- cargo test --locked --release --all-targets'
       - 'bash scripts/core.sh test-floor release 258'
 
   test:oracle:
