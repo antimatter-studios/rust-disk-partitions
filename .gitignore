@@ -9,6 +9,6 @@
 # chore fingerprint cache (sources:/generates: checksums). Derived data.
 .chore/
 
-# Tier logs (scripts/tier.sh). Derived data: the run that wrote them is
+# Tier logs (rust-fs-core's scripts/tier.sh). Derived data: the run that wrote them is
 # what matters, and CI keeps them as an artefact.
 /tmp/
