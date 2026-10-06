@@ -4,7 +4,15 @@ Notable changes to `am-partitions`, newest first. This is a `0.x` crate, so the
 **minor** is the compatibility boundary: a minor bump may break API, a patch
 never does.
 
-## [Unreleased]
+## [0.5.1] — 2026-10-06
+
+### Renamed
+
+- **The last version published as `am-partitions`.** The crate is renamed to
+  `rust-disk-partitions`, the repository's name; every later version is published under
+  that name only, starting at 0.6.0. The description and the README say where
+  the crate went. The import changes too: `use partitions::...` becomes `use disk_partitions::...`.
+
 
 ### Added
 
