@@ -1,5 +1,19 @@
 # partitions
 
+> **Renamed to [`rust-disk-partitions`](https://crates.io/crates/rust-disk-partitions).**
+> `am-partitions` 0.5.1 is the last version published under this name. New versions
+> are published only as `rust-disk-partitions`, starting at 0.6.0. To move, change one line
+> in `Cargo.toml`:
+>
+> ```toml
+> # before
+> am-partitions = "0.5"
+> # after
+> rust-disk-partitions = "0.6"
+> ```
+>
+> The import changes too: `use partitions::...` becomes `use disk_partitions::...`.
+
 Pure-Rust partition-table probe and filesystem-magic sniffer over any
 random-access block source.
 

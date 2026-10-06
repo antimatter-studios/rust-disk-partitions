@@ -1,9 +1,9 @@
 [package]
 name = "am-partitions"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "MIT"
-description = "Pure-Rust partition-table probe (GPT/MBR) and filesystem-magic sniffer."
+description = "Renamed to rust-disk-partitions: this crate receives no further versions. Depend on rust-disk-partitions instead; the import becomes use disk_partitions."
 repository = "https://github.com/antimatter-studios/rust-partitions"
 
 # The fuzz crate is its own package, on its own toolchain, and is not
