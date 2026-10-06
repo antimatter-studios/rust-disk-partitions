@@ -927,7 +927,7 @@ fn scan_shell(line: &str) -> ShellScan {
 /// the strict direction.
 fn cargo_test_arguments(words: &[String]) -> Option<Vec<&str>> {
     // A TIER WRAPPER IS NOT A DIFFERENT COMMAND (#127). Every tier is
-    // written as `scripts/tier.sh LABEL LOG MAX-LINES MAX-BYTES -- cargo
+    // written as `../rust-fs-core/scripts/tier.sh LABEL LOG MAX-LINES MAX-BYTES -- cargo
     // test ...` since the output budget was adopted, and to this function
     // that was a command named `bash` with no `cargo test` in it. The PR
     // gate's debug run would have become invisible the moment the budget
@@ -969,14 +969,14 @@ fn cargo_test_arguments(words: &[String]) -> Option<Vec<&str>> {
 
 /// The command a tier wrapper was asked to run, if this is one.
 ///
-/// `scripts/tier.sh LABEL LOG MAX-LINES MAX-BYTES -- COMMAND...` is the
+/// `../rust-fs-core/scripts/tier.sh LABEL LOG MAX-LINES MAX-BYTES -- COMMAND...` is the
 /// shape of every tier in `chores.yml` and in `ci.yml`. Everything before
 /// the first `--` belongs to the wrapper -- a label, a log name and the two
 /// budgets -- and everything after it is the command it runs, which is what
 /// every rule in this file is actually about.
 ///
 /// THE WRAPPER IS RECOGNISED AS THE PROGRAM, NOT AS A WORD. A line that
-/// merely names `scripts/tier.sh` -- an echoed command, a path in a message
+/// merely names `../rust-fs-core/scripts/tier.sh` -- an echoed command, a path in a message
 /// -- is not an invocation of it, for the same reason
 /// `an_echoed_command_is_not_a_run` exists: matching a substring is what
 /// let a printed command satisfy a guard about a run.
@@ -992,7 +992,7 @@ fn command_after_the_tier_wrapper(words: &[String]) -> Option<&[String]> {
     }
 
     // The same leading `env`/assignment skip `cargo_test_arguments` makes,
-    // so `EXPECT_OVERFLOW_CHECKS=1 bash scripts/tier.sh ...` is seen.
+    // so `EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh ...` is seen.
     let mut index = 0;
     while index < words.len()
         && (words[index] == "env" || (!words[index].starts_with('-') && words[index].contains('=')))
@@ -2807,7 +2807,7 @@ cargo build --locked --release
 
     /// A TIER WRAPPER IS NOT A DIFFERENT COMMAND (#127).
     ///
-    /// Every tier runs as `scripts/tier.sh LABEL LOG LINES BYTES -- cargo
+    /// Every tier runs as `../rust-fs-core/scripts/tier.sh LABEL LOG LINES BYTES -- cargo
     /// test ...` so a green run prints a verdict instead of 289 `... ok`
     /// lines. To a scan that reads the first word of the line, that is a
     /// command named `bash`, and the debug run the whole file exists to
@@ -2815,8 +2815,8 @@ cargo build --locked --release
     #[test]
     fn a_debug_run_through_the_tier_wrapper_still_counts() {
         for line in [
-            "bash scripts/tier.sh \"test (debug)\" debug 440 28000 -- cargo test --locked --all-targets",
-            "scripts/tier.sh test debug 440 28000 -- cargo test --locked --all-targets",
+            "bash ../rust-fs-core/scripts/tier.sh \"test (debug)\" debug 440 28000 -- cargo test --locked --all-targets",
+            "../rust-fs-core/scripts/tier.sh test debug 440 28000 -- cargo test --locked --all-targets",
             "bash ./scripts/tier.sh test debug 440 28000 -- cargo test --locked --all-targets",
         ] {
             assert_eq!(
@@ -2831,8 +2831,8 @@ cargo build --locked --release
     #[test]
     fn a_release_run_through_the_tier_wrapper_is_still_a_release_run() {
         for line in [
-            "bash scripts/tier.sh \"test (release)\" release 440 28000 -- cargo test --locked --release --all-targets",
-            "bash scripts/tier.sh release release 440 28000 -- cargo test --locked -r --all-targets",
+            "bash ../rust-fs-core/scripts/tier.sh \"test (release)\" release 440 28000 -- cargo test --locked --release --all-targets",
+            "bash ../rust-fs-core/scripts/tier.sh release release 440 28000 -- cargo test --locked -r --all-targets",
         ] {
             assert_eq!(
                 runs_with_overflow_checks(line),
@@ -2847,9 +2847,9 @@ cargo build --locked --release
     #[test]
     fn a_line_that_only_names_the_tier_wrapper_is_not_a_run() {
         for line in [
-            "echo scripts/tier.sh label debug 440 28000 -- cargo test --locked --lib",
-            "echo \"bash scripts/tier.sh t debug 1 1 -- cargo test --locked --lib\"",
-            "cat scripts/tier.sh",
+            "echo ../rust-fs-core/scripts/tier.sh label debug 440 28000 -- cargo test --locked --lib",
+            "echo \"bash ../rust-fs-core/scripts/tier.sh t debug 1 1 -- cargo test --locked --lib\"",
+            "cat ../rust-fs-core/scripts/tier.sh",
         ] {
             assert_eq!(
                 runs_with_overflow_checks(line),
@@ -2865,8 +2865,8 @@ cargo build --locked --release
     #[test]
     fn a_wrapped_run_whose_status_is_discarded_still_does_not_count() {
         for line in [
-            "bash scripts/tier.sh t debug 440 28000 -- cargo test --locked --all-targets || true",
-            "bash scripts/tier.sh t debug 440 28000 -- cargo test --locked --all-targets | tee out.log",
+            "bash ../rust-fs-core/scripts/tier.sh t debug 440 28000 -- cargo test --locked --all-targets || true",
+            "bash ../rust-fs-core/scripts/tier.sh t debug 440 28000 -- cargo test --locked --all-targets | tee out.log",
         ] {
             assert_eq!(
                 runs_with_overflow_checks(line),

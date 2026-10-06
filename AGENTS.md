@@ -178,15 +178,12 @@ silently in release. `tests/ci_profile.rs` holds the debug run to being a debug
 run — and it reads *through* the tier wrapper to find it, so wrapping a run
 cannot hide it.
 
-**Every tier goes through `scripts/tier.sh`**, which is this repository's half
-of the shared block's "Output is budgeted". It does not carry a copy of the
-wrapper: `scripts/output-budget.sh` belongs to `rust-fs-core` and is resolved
-at run time — the sibling beside this checkout first, then whatever cargo
-resolved `rust-fs-core` to — and whatever is found must answer `--version` with
-`rust-fs-core-output-budget 1`. A present-but-wrong copy is fatal rather than
-a reason to look elsewhere. The budgets and the floors are in `chores.yml`,
-measured, beside the command each one bounds;
-`tests/scripts/test-tier-resolver.sh` drives every refusal.
+**Every tier goes through rust-fs-core's `scripts/tier.sh`, run in place**
+from the `../rust-fs-core` checkout at the pinned version, which is this
+repository's half of the shared block's "Output is budgeted". It keeps no copy
+of the runner, of `scripts/output-budget.sh`, or of any family script, and
+rust-fs-core's `family-check` (run in CI) refuses one. The budgets and the
+floors are in `chores.yml`, measured, beside the command each one bounds.
 
 A pass prints one verdict line naming `tmp/logs/<tier>.log`; **read the log**
 rather than expecting the tier to recite it. `chore test -- --verbose`
@@ -217,7 +214,7 @@ all. Read `mergeStateStatus` and `statusCheckRollup.state`.
 
 `chore check:ci-gate` holds both halves of that mechanically — every job in
 `ci.yml` must appear in `ci-ok`'s `needs:`, and `.github-guard` must require
-`ci-ok` and nothing else. The task runs `scripts/core.sh ci-gate` and nothing else,
+`ci-ok` and nothing else. The task runs `../rust-fs-core/scripts/ci-gate.sh` and nothing else,
 so the script is what can be tested, reviewed and run without `chore` at all.
 It replaced `tests/ci_aggregate_gate.rs`: that parsed a YAML file and compared
 strings, exercising nothing this crate ships, and as a `cargo test` it counted
