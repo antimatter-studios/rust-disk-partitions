@@ -58,12 +58,12 @@ pub const PARTITION_BUDGET: usize = 64;
 pub fn walk(image: &[u8]) {
     let dev = Bytes(image.to_vec());
 
-    let _ = partitions::probe(&dev);
-    let Ok((_kind, partitions, _source)) = partitions::probe_with_status(&dev) else {
+    let _ = disk_partitions::probe(&dev);
+    let Ok((_kind, partitions, _source)) = disk_partitions::probe_with_status(&dev) else {
         return;
     };
 
     for partition in partitions.iter().take(PARTITION_BUDGET) {
-        let _ = partitions::sniff(&dev, partition);
+        let _ = disk_partitions::sniff(&dev, partition);
     }
 }

@@ -1,6 +1,6 @@
 //! The header names the library the build actually produces.
 //!
-//! `include/partitions.h` said "Link with libam_partitions.a" for as long as the file
+//! `include/disk_partitions.h` said "Link with libam_partitions.a" for as long as the file
 //! existed, and cargo has never produced that name: `[lib] name` is
 //! `partitions`, so the artefact is `libpartitions.a` — which is exactly what
 //! `chores.yml` copies. A C consumer following the header got a linker
@@ -187,12 +187,13 @@ fn the_header_tells_consumers_to_link_the_library_that_is_built() {
 /// that merely still handles the plain spelling proves nothing.
 #[test]
 fn the_lib_name_is_parsed_rather_than_scanned() {
-    let plain = "[package]\nname = \"am-partitions\"\n\n[lib]\nname = \"partitions\"\n";
-    let single_quoted = "[package]\nname = \"am-partitions\"\n\n[lib]\nname = 'partitions'\n";
+    let plain = "[package]\nname = \"rust-disk-partitions\"\n\n[lib]\nname = \"partitions\"\n";
+    let single_quoted =
+        "[package]\nname = \"rust-disk-partitions\"\n\n[lib]\nname = 'partitions'\n";
     let trailing_comment =
-        "[package]\nname = \"am-partitions\"\n\n[lib]\nname = \"partitions\" # the exported ABI name\n";
+        "[package]\nname = \"rust-disk-partitions\"\n\n[lib]\nname = \"partitions\" # the exported ABI name\n";
     let commented_section =
-        "[package]\nname = \"am-partitions\"\n\n[lib] # the staticlib consumers link\nname = \"partitions\"\n";
+        "[package]\nname = \"rust-disk-partitions\"\n\n[lib] # the staticlib consumers link\nname = \"partitions\"\n";
 
     for (what, toml) in [
         ("the plain spelling", plain),
@@ -211,15 +212,18 @@ fn the_lib_name_is_parsed_rather_than_scanned() {
 /// The package name is not the library name.
 #[test]
 fn the_lib_name_comes_from_the_lib_section_and_not_the_package() {
-    let toml = "[package]\nname = \"am-partitions\"\nversion = \"0.4.1\"\n\n\
+    let toml = "[package]\nname = \"rust-disk-partitions\"\nversion = \"0.4.1\"\n\n\
                 [lib]\nname = \"partitions\"\ncrate-type = [\"staticlib\", \"rlib\"]\n";
     assert_eq!(
         lib_name(toml).as_deref(),
         Some("partitions"),
-        "using the package name would look for libam-partitions.a"
+        "using the package name would look for librust-disk-partitions.a"
     );
     // And a manifest with no [lib] section has no library name to give.
-    assert_eq!(lib_name("[package]\nname = \"am-partitions\"\n"), None);
+    assert_eq!(
+        lib_name("[package]\nname = \"rust-disk-partitions\"\n"),
+        None
+    );
 }
 
 /// AN INSTRUCTION, NOT A MENTION — AND NOT A NEGATION.

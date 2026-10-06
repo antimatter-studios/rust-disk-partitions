@@ -1,4 +1,4 @@
-# Working in rust-partitions (agent guide)
+# Working in rust-disk-partitions (agent guide)
 
 Pure-Rust partition-table probe, filesystem-magic sniffer and table writer over
 any random-access block source, exposing a C ABI, validated against `sgdisk`,
@@ -156,7 +156,7 @@ it**. Do not silence output to fit, and do not route around `tier.sh`.
 <!-- END SHARED BLOCK: agent-core v2 -->
 ## What this is
 
-Partition-table parsing — MBR and GPT — over `am-fs-core`'s device traits,
+Partition-table parsing — MBR and GPT — over `rust-fs-core`'s device traits,
 exposed through a C ABI (`tests/c_abi.rs`) and linked into the app as a
 staticlib.
 
@@ -182,7 +182,7 @@ cannot hide it.
 of the shared block's "Output is budgeted". It does not carry a copy of the
 wrapper: `scripts/output-budget.sh` belongs to `rust-fs-core` and is resolved
 at run time — the sibling beside this checkout first, then whatever cargo
-resolved `am-fs-core` to — and whatever is found must answer `--version` with
+resolved `rust-fs-core` to — and whatever is found must answer `--version` with
 `rust-fs-core-output-budget 1`. A present-but-wrong copy is fatal rather than
 a reason to look elsewhere. The budgets and the floors are in `chores.yml`,
 measured, beside the command each one bounds;

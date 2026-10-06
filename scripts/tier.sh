@@ -55,7 +55,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # a coordinated local change to core's wrapper is exercised here on the next
 # run rather than being masked by a registry copy of the last release. A
 # checkout with no sibling beside it falls through to cargo, which has already
-# resolved am-fs-core and can say where it put it.
+# resolved rust-fs-core and can say where it put it.
 #
 # FS_CORE_ROOT NAMES CORE OUTRIGHT, and when it is set there is no fallback:
 # you have said where core is, so its absence there is an answer rather than a
@@ -110,7 +110,7 @@ else
 import json, sys
 packages = json.load(sys.stdin)["packages"]
 print(next((p["manifest_path"].rsplit("/", 1)[0]
-            for p in packages if p["name"] == "am-fs-core"), ""))
+            for p in packages if p["name"] == "rust-fs-core"), ""))
 ' 2>/dev/null)"
     if [ -n "$CORE_DIR" ] && [ -e "$CORE_DIR/scripts/output-budget.sh" ]; then
         verified "$CORE_DIR/scripts/output-budget.sh" || refuse_wrong "$CORE_DIR"
@@ -123,9 +123,9 @@ if [ -z "$CORE_SCRIPT" ]; then
     echo "         The wrapper lives in rust-fs-core and is deliberately not" >&2
     echo "         committed here. Looked for the sibling at" >&2
     echo "           $CORE_ROOT/scripts/output-budget.sh" >&2
-    echo "         then asked cargo for the am-fs-core package." >&2
+    echo "         then asked cargo for the rust-fs-core package." >&2
     echo "         Clone rust-fs-core beside this checkout, or depend on" >&2
-    echo "         am-fs-core v0.2.13 or later." >&2
+    echo "         rust-fs-core v0.2.13 or later." >&2
     exit 1
 fi
 

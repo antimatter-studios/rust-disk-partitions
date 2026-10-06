@@ -19,8 +19,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-am-partitions = { path = ".." }
-am-fs-core = { path = "../../rust-fs-core", version = "0.2.18" }
+rust-disk-partitions = { path = ".." }
+rust-fs-core = { path = "../../rust-fs-core", version = "0.3.0" }
 
 [[bin]]
 name = "device"

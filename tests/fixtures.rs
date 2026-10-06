@@ -1,8 +1,8 @@
 //! Integration tests with hand-built MBR / GPT / FS-magic fixtures.
 
-use partitions::gpt::type_guids;
-use partitions::sniff::{classify, ExtVersion, FsKind};
-use partitions::{
+use disk_partitions::gpt::type_guids;
+use disk_partitions::sniff::{classify, ExtVersion, FsKind};
+use disk_partitions::{
     probe, sniff, BlockRead, Error, OwnedSlice, Partition, PartitionKind, SliceReader, TableKind,
 };
 use std::sync::{Arc, Mutex};
@@ -700,7 +700,7 @@ fn an_extended_container_is_not_reported_as_a_volume() {
         // The container is still visible to a caller that wants the raw
         // table rather than the volumes on it.
         let every =
-            partitions::mbr::parse_all_entries(&mbr_sector(&dev), dev.size_bytes()).unwrap();
+            disk_partitions::mbr::parse_all_entries(&mbr_sector(&dev), dev.size_bytes()).unwrap();
         assert_eq!(every.len(), 2, "type {container:#04x}");
         assert!(matches!(
             every[1].kind,
@@ -905,7 +905,7 @@ fn swap_is_sniffed_through_sniff_at_every_page_size_classify_probes() {
 /// Sniff a whole device through the C ABI with a declared size.
 fn sniff_device_declaring(dev: Bytes, declared: u64) -> i32 {
     let handle = fs_core::ffi::FsCoreDevice::into_handle(Arc::new(dev));
-    let rc = unsafe { partitions::capi::partitions_sniff_device(handle, declared) };
+    let rc = unsafe { disk_partitions::capi::partitions_sniff_device(handle, declared) };
     unsafe { fs_core::ffi::fs_core_device_close(handle) };
     rc
 }
@@ -956,7 +956,7 @@ fn sniff_device_does_not_report_unknown_for_a_window_the_declared_size_cut_short
     // A declared size that covers the whole sniff window read everything
     // sniffing looks at, so its negative is conclusive too.
     assert_eq!(
-        sniff_device_declaring(Bytes::new(DEVICE), partitions::sniff::WINDOW),
+        sniff_device_declaring(Bytes::new(DEVICE), disk_partitions::sniff::WINDOW),
         0
     );
 }
@@ -1000,7 +1000,7 @@ fn gpt_with_broken_entries(dev: &Bytes) {
 /// caller is told, which it was not before.
 #[test]
 fn a_gpt_entry_reports_the_rules_it_breaks() {
-    use partitions::gpt::entry_issue;
+    use disk_partitions::gpt::entry_issue;
 
     let dev = Bytes::new(8 * 1024 * 1024);
     gpt_with_broken_entries(&dev);
@@ -1059,7 +1059,7 @@ fn a_healthy_gpt_reports_no_issues() {
 /// An entry that ends past the last usable LBA is reported as such.
 #[test]
 fn a_gpt_entry_running_into_the_backup_table_is_reported() {
-    use partitions::gpt::entry_issue;
+    use disk_partitions::gpt::entry_issue;
 
     let dev = Bytes::new(1024 * 1024);
     let total_sectors = 1024 * 1024 / 512;
@@ -1087,8 +1087,8 @@ fn a_gpt_entry_running_into_the_backup_table_is_reported() {
 /// to format destroys the very table that described it.
 #[test]
 fn the_c_abi_reports_issues_and_refuses_a_slice_for_a_broken_entry() {
-    use partitions::capi::*;
-    use partitions::gpt::entry_issue;
+    use disk_partitions::capi::*;
+    use disk_partitions::gpt::entry_issue;
     use std::ptr;
     use std::sync::Arc;
 
@@ -1126,7 +1126,7 @@ fn the_c_abi_reports_issues_and_refuses_a_slice_for_a_broken_entry() {
 /// A slice is still handed out for an entry that breaks nothing.
 #[test]
 fn the_c_abi_still_opens_a_slice_for_a_sound_entry() {
-    use partitions::capi::*;
+    use disk_partitions::capi::*;
     use std::ptr;
     use std::sync::Arc;
 
@@ -1194,7 +1194,7 @@ impl fs_core::BlockDevice for WritableBytes {
 /// reports as broken" is a rule a caller can follow.
 #[test]
 fn removing_exactly_the_entries_that_report_issues_makes_the_table_committable() {
-    use partitions::{PartitionRef, PartitionSet};
+    use disk_partitions::{PartitionRef, PartitionSet};
 
     let dev = WritableBytes(Bytes::new(8 * 1024 * 1024));
     gpt_with_broken_entries(&dev.0);
@@ -1228,7 +1228,7 @@ fn removing_exactly_the_entries_that_report_issues_makes_the_table_committable()
 /// the broken ones survives.
 #[test]
 fn a_sound_entry_survives_removing_the_broken_ones() {
-    use partitions::{PartitionRef, PartitionSet};
+    use disk_partitions::{PartitionRef, PartitionSet};
 
     let dev = WritableBytes(Bytes::new(8 * 1024 * 1024));
     build_gpt_with_entries(
@@ -1273,8 +1273,8 @@ fn a_sound_entry_survives_removing_the_broken_ones() {
 /// set is committed. #73.
 #[test]
 fn issues_follow_remove_and_resize_rather_than_staying_as_probed() {
-    use partitions::gpt::entry_issue;
-    use partitions::{PartitionRef, PartitionSet};
+    use disk_partitions::gpt::entry_issue;
+    use disk_partitions::{PartitionRef, PartitionSet};
 
     // Remove one of an overlapping pair.
     let dev = WritableBytes(Bytes::new(8 * 1024 * 1024));
@@ -1354,7 +1354,7 @@ fn issues_follow_remove_and_resize_rather_than_staying_as_probed() {
 /// highest end seen so far as well as the previous one.
 #[test]
 fn an_entry_nested_inside_another_is_reported_as_overlapping() {
-    use partitions::gpt::entry_issue;
+    use disk_partitions::gpt::entry_issue;
 
     let dev = Bytes::new(16 * 1024 * 1024);
     build_gpt_with_entries(
@@ -1390,7 +1390,7 @@ fn an_entry_nested_inside_another_is_reported_as_overlapping() {
 /// an off-by-one in a partition editor produces.
 #[test]
 fn two_entries_sharing_exactly_one_sector_overlap() {
-    use partitions::gpt::entry_issue;
+    use disk_partitions::gpt::entry_issue;
 
     let dev = Bytes::new(8 * 1024 * 1024);
     build_gpt_with_entries(
@@ -1472,7 +1472,7 @@ fn an_entry_ending_on_the_last_usable_lba_is_legal() {
 /// together bound the rule.
 #[test]
 fn an_entry_starting_past_the_disk_is_reported() {
-    use partitions::gpt::entry_issue;
+    use disk_partitions::gpt::entry_issue;
 
     let dev = Bytes::new(1024 * 1024);
     build_gpt_with_entries(
@@ -1848,7 +1848,7 @@ fn a_device_that_states_no_size_does_not_make_every_partition_absent() {
 /// buffer with.
 #[test]
 fn the_c_abi_reports_both_lengths_and_the_slice_is_the_second_one() {
-    use partitions::capi::*;
+    use disk_partitions::capi::*;
     use std::ptr;
     use std::sync::Arc;
 

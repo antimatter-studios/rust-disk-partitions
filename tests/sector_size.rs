@@ -43,7 +43,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use partitions::Error;
+use disk_partitions::Error;
 
 /// The image as a device, opened as a file rather than copied into
 /// memory: it is the committed bytes that are under test, and a
@@ -129,7 +129,7 @@ fn guid_bytes(text: &str) -> [u8; 16] {
 fn a_4kn_gpt_sfdisk_wrote_is_refused_by_its_sector_size() {
     let dev = device();
 
-    match partitions::probe(&dev) {
+    match disk_partitions::probe(&dev) {
         Err(Error::UnsupportedSectorSize(why)) => {
             assert!(
                 why.contains("4096"),
@@ -158,7 +158,7 @@ fn a_4kn_gpt_sfdisk_wrote_is_refused_by_its_sector_size() {
 #[test]
 fn the_backup_fallback_does_not_rescue_a_4kn_disk_into_a_wrong_answer() {
     let dev = device();
-    match partitions::probe_with_status(&dev) {
+    match disk_partitions::probe_with_status(&dev) {
         Err(Error::UnsupportedSectorSize(_)) => {}
         other => panic!("probe_with_status on a 4Kn disk gave {other:?}"),
     }
@@ -268,7 +268,7 @@ fn the_committed_image_is_the_4kn_disk_sfdisk_recorded() {
 /// table" demand opposite responses from a user.
 #[test]
 fn the_c_abi_refuses_a_4kn_disk_and_says_why() {
-    use partitions::capi::*;
+    use disk_partitions::capi::*;
     use std::ptr;
     use std::sync::Arc;
 

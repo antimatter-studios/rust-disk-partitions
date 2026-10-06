@@ -9,11 +9,11 @@
 //! 3. GPT entry typed as the EFI System Partition GUID → bootable even when
 //!    no attribute bits are set.
 
-use fs_core::FileDevice;
-use partitions::gpt::{attr, type_guids};
-use partitions::{
+use disk_partitions::gpt::{attr, type_guids};
+use disk_partitions::{
     gpt_write, mbr, probe, BlockDevice, BlockRead, Partition, PartitionKind, TableKind,
 };
+use fs_core::FileDevice;
 use std::sync::Mutex;
 use tempfile::tempdir;
 

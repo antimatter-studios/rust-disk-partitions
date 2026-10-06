@@ -1,21 +1,26 @@
 [package]
-name = "am-partitions"
-version = "0.5.1"
+name = "rust-disk-partitions"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
-description = "Renamed to rust-disk-partitions: this crate receives no further versions. Depend on rust-disk-partitions instead; the import becomes use disk_partitions."
-repository = "https://github.com/antimatter-studios/rust-partitions"
+description = "Pure-Rust partition-table probe (GPT/MBR) and filesystem-magic sniffer."
+repository = "https://github.com/antimatter-studios/rust-disk-partitions"
 
 # The fuzz crate is its own package, on its own toolchain, and is not
 # part of this one. Without this, `cargo package` and `cargo publish`
 # try to include it and fail on the nightly-only dependency.
 exclude = ["fuzz"]
 
+# The name this crate had on crates.io: the semver check's baseline until
+# a release exists under the new one (rust-fs-core's semver-check.sh).
+[package.metadata.semver]
+former-name = "rust-disk-partitions"
+
 [lib]
-# Published as `am-partitions` on crates.io; consumers `use partitions::...`
+# Published as `rust-disk-partitions` on crates.io; consumers `use partitions::...`
 # inside their code. Decoupling the package name from the lib name keeps the
 # brand-y prefix out of every import statement.
-name = "partitions"
+name = "disk_partitions"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
@@ -23,7 +28,7 @@ crate-type = ["staticlib", "rlib"]
 crc32fast = "1"
 # Block-device trait surface (BlockRead + FileDevice). Local path dep until
 # both crates publish; flip to a published version on the first release.
-am-fs-core = { path = "../rust-fs-core", version = "0.2.18" }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.0" }
 
 [dev-dependencies]
 # YAML parser for tests/ci_profile.rs, which reads .github/workflows/ci.yml

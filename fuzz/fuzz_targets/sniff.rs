@@ -9,5 +9,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = partitions::sniff::classify(data);
+    let _ = disk_partitions::sniff::classify(data);
 });

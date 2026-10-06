@@ -41,9 +41,9 @@
 mod common;
 
 use common::*;
-use partitions::gpt::{attr, type_guids};
-use partitions::mbr::types as mbr_types;
-use partitions::{
+use disk_partitions::gpt::{attr, type_guids};
+use disk_partitions::mbr::types as mbr_types;
+use disk_partitions::{
     gpt, gpt_write, mbr, probe, probe_with_status, Partition, PartitionKind, PartitionSet,
     TableKind, TableSource, SECTOR_SIZE,
 };
@@ -210,7 +210,7 @@ fn write_gpt_image(name: &str, size: u64, disk_guid: [u8; 16], specs: &[GptSpec]
     let parts: Vec<Partition> = specs.iter().map(GptSpec::to_partition).collect();
     let dev = img.device();
     gpt_write::write_gpt(&dev, &parts, disk_guid).expect("this crate writes the GPT");
-    partitions::BlockDevice::flush(&dev).expect("flush");
+    disk_partitions::BlockDevice::flush(&dev).expect("flush");
     drop(dev);
     img
 }
@@ -557,7 +557,7 @@ fn mbr_tables_this_crate_writes_are_read_back_field_by_field_by_sfdisk_partx_and
             .collect();
         let dev = img.device();
         mbr::write_mbr(&dev, &partitions).expect("this crate writes the MBR");
-        partitions::BlockDevice::flush(&dev).expect("flush");
+        disk_partitions::BlockDevice::flush(&dev).expect("flush");
         drop(dev);
 
         let sf = sfdisk_json(img.path());

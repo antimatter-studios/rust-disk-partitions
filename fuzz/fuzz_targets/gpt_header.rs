@@ -9,9 +9,9 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let mut sector = [0u8; partitions::SECTOR_SIZE_USIZE];
+    let mut sector = [0u8; disk_partitions::SECTOR_SIZE_USIZE];
     let take = data.len().min(sector.len());
     sector[..take].copy_from_slice(&data[..take]);
 
-    let _ = partitions::gpt::parse_header(&sector);
+    let _ = disk_partitions::gpt::parse_header(&sector);
 });

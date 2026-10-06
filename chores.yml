@@ -3,7 +3,7 @@ chore_min_version: 0.6.0
 
 # THE CONTRACT THIS FILE EXISTS TO OWN.
 #
-# How to build rust-partitions is knowledge that belongs to rust-partitions.
+# How to build rust-disk-partitions is knowledge that belongs to rust-disk-partitions.
 # `staticlib` is the whole interface a consumer needs, AND IT TAKES NO
 # OUTPUT DIRECTORY: it builds into this crate's own dist/, `chore artifact`
 # prints the absolute path of that DIRECTORY, and a consumer copies its
@@ -12,28 +12,28 @@ chore_min_version: 0.6.0
 #
 # `artifact` PRINTS A DIRECTORY, NOT A FILE. That is the one place this
 # differs from rust-blk-probe, whose single binary lets its `artifact` name a
-# file: this crate produces libpartitions.a AND the headers beside it, so
+# file: this crate produces libdisk_partitions.a AND the headers beside it, so
 # there is no single path to name.
 #
 # NO KNOWN CONSUMER LINKS THIS ARCHIVE TODAY, and that is worth saying
 # rather than leaving a reader to wonder why the task exists. Consumers
-# take am-partitions as a CRATE — through rust-disk-probe, and as a
+# take rust-disk-partitions as a CRATE — through rust-disk-probe, and as a
 # dev-dependency of the img readers' `inspect` example — so it arrives
 # already linked inside somebody else's output. The task is here for
 # uniformity, for anyone building this crate on its own, and because the
 # moment a consumer does want the archive it should not have to learn the
 # triple.
 #
-# WHY fs_core.h IS COPIED TOO. include/partitions.h opens with
+# WHY fs_core.h IS COPIED TOO. include/disk_partitions.h opens with
 # `#include "fs_core.h"` — the probe reads through a FsCoreDevice — so a
-# consumer given only partitions.h cannot compile. The path below is the same
-# one Cargo.toml resolves am-fs-core from, and NOTHING CHECKS THAT THE TWO
+# consumer given only disk_partitions.h cannot compile. The path below is the same
+# one Cargo.toml resolves rust-fs-core from, and NOTHING CHECKS THAT THE TWO
 # AGREE.
 vars:
   TRIPLE: aarch64-apple-darwin
-  # `[package].name` is am-partitions; `[lib].name` is partitions, so cargo
-  # writes libpartitions.a. The header mirrors the lib name.
-  LIBNAME: partitions
+  # `[package].name` is rust-disk-partitions; `[lib].name` is partitions, so cargo
+  # writes libdisk_partitions.a. The header mirrors the lib name.
+  LIBNAME: disk_partitions
 
 tasks:
   staticlib:
@@ -220,7 +220,7 @@ tasks:
     #
     # IT PRINTS A DIRECTORY, NOT A FILE, and that is the one place this differs
     # from rust-blk-probe's `artifact`. That crate produces a single binary, so
-    # it can name a file. This one produces libpartitions.a AND the headers
+    # it can name a file. This one produces libdisk_partitions.a AND the headers
     # beside it, so there is no single path to name — A CONSUMER COPIES THE
     # CONTENTS of what this prints. A consumer that treats it as a file path
     # will silently copy the wrong thing.

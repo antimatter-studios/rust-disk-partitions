@@ -1,19 +1,5 @@
 # partitions
 
-> **Renamed to [`rust-disk-partitions`](https://crates.io/crates/rust-disk-partitions).**
-> `am-partitions` 0.5.1 is the last version published under this name. New versions
-> are published only as `rust-disk-partitions`, starting at 0.6.0. To move, change one line
-> in `Cargo.toml`:
->
-> ```toml
-> # before
-> am-partitions = "0.5"
-> # after
-> rust-disk-partitions = "0.6"
-> ```
->
-> The import changes too: `use partitions::...` becomes `use disk_partitions::...`.
-
 Pure-Rust partition-table probe and filesystem-magic sniffer over any
 random-access block source.
 
@@ -36,7 +22,7 @@ It does **not** mount anything, decode files, or write — it's a probe.
 - [x] GPT backup header read + validate, with primary/backup mismatch reporting (`gpt::parse_backup`, `gpt::validate_backup` returning `BackupStatus::Ok` / `Mismatch`)
 - [x] MBR with GPT-protective fallthrough
 - [x] FS sniff: ext2/3/4, NTFS, exFAT, FAT16, FAT32, HFS+, APFS, Linux swap, ISO 9660, SquashFS
-- [x] `SliceReader` adapter — rebases offsets on a sub-range of any `BlockRead` (planned to move into `am-fs-core` since slicing is a generic block-layer concern; this crate will re-export for backwards compatibility)
+- [x] `SliceReader` adapter — rebases offsets on a sub-range of any `BlockRead` (planned to move into `rust-fs-core` since slicing is a generic block-layer concern; this crate will re-export for backwards compatibility)
 - [x] C ABI for FFI (`partitions_probe`, `partitions_count`, `partitions_table_kind`, `partitions_get`, `partitions_sniff`, `partitions_open_slice`, `partitions_list_free`; header in `include/partitions.h`)
 - [ ] LVM / LUKS / mdraid detection
 - [ ] Logical-partition (extended MBR) chain walking. Until it exists,
@@ -63,7 +49,7 @@ It does **not** mount anything, decode files, or write — it's a probe.
 ## Use
 
 ```rust
-use partitions::{probe, sniff, FileBlock};
+use disk_partitions::{probe, sniff, FileBlock};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dev = FileBlock::open("disk.img")?;
@@ -104,10 +90,10 @@ repository, not uploaded from someone's machine. To check the crates.io
 download of version `X.Y.Z`:
 
 ```sh
-curl -sSfLo am-partitions-X.Y.Z.crate https://static.crates.io/crates/am-partitions/am-partitions-X.Y.Z.crate
-gh attestation verify am-partitions-X.Y.Z.crate \
-  --repo antimatter-studios/rust-partitions \
-  --signer-workflow antimatter-studios/rust-partitions/.github/workflows/release.yml
+curl -sSfLo rust-disk-partitions-X.Y.Z.crate https://static.crates.io/crates/rust-disk-partitions/rust-disk-partitions-X.Y.Z.crate
+gh attestation verify rust-disk-partitions-X.Y.Z.crate \
+  --repo antimatter-studios/rust-disk-partitions \
+  --signer-workflow antimatter-studios/rust-disk-partitions/.github/workflows/release.yml
 ```
 
 The workflow refuses to attest a `.crate` whose sha256 differs from the
