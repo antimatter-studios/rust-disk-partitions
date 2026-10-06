@@ -3,18 +3,6 @@
 version = 4
 
 [[package]]
-name = "am-fs-core"
-version = "0.2.18"
-
-[[package]]
-name = "am-partitions"
-version = "0.5.0"
-dependencies = [
- "am-fs-core",
- "crc32fast",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -94,9 +82,9 @@ dependencies = [
 name = "partitions-fuzz"
 version = "0.0.0"
 dependencies = [
- "am-fs-core",
- "am-partitions",
  "libfuzzer-sys",
+ "rust-disk-partitions",
+ "rust-fs-core",
 ]
 
 [[package]]
@@ -104,6 +92,18 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rust-disk-partitions"
+version = "0.6.0"
+dependencies = [
+ "crc32fast",
+ "rust-fs-core",
+]
+
+[[package]]
+name = "rust-fs-core"
+version = "0.3.0"
 
 [[package]]
 name = "shlex"

@@ -7,6 +7,9 @@
 #   scripts/core.sh family-check               this repository keeps no copy of these
 #   scripts/core.sh guest-rust-toolchain       in a test VM: the pinned toolchain, installed
 #   scripts/core.sh ci-gate                    ci-ok needs every job; the guard names ci-ok alone
+#   scripts/core.sh package-cli VERSION LABEL  the release tarball, built and checked
+#   scripts/core.sh stage-siblings SHARE SIB.. on the host: path siblings staged for a test VM
+#   scripts/core.sh guest-rust-run NAME SHARE.. in a test VM: siblings, toolchain, then the suite
 #
 # THIS FILE IS THE SAME IN EVERY REPOSITORY, byte for byte, and its canonical
 # copy is rust-fs-core's scripts/core.sh. It is the one piece a repository has
@@ -23,7 +26,8 @@
 #   2. The sibling checkout ../rust-fs-core. Its path is built from this
 #      file's own location, so it is POSIX on every runner, Git Bash
 #      included, and a local change to core is exercised, not shadowed.
-#   3. Wherever cargo resolved the am-fs-core dependency -- the registry copy
+#   3. Wherever cargo resolved the rust-fs-core dependency (am-fs-core up to
+#      0.2.24, still accepted while the family moves) -- the registry copy
 #      of the pinned release. Reading cargo's JSON needs python3.
 #
 # A COPY IS ACCEPTED ON ITS ANSWER TO --version AND NOTHING ELSE. A script
@@ -37,14 +41,14 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "usage: scripts/core.sh test-floor|semver-check|family-check|guest-rust-toolchain|ci-gate [ARG...]" >&2
+    echo "usage: scripts/core.sh test-floor|semver-check|family-check|guest-rust-toolchain|ci-gate|stage-siblings|guest-rust-run|package-cli [ARG...]" >&2
     exit 2
 }
 [ $# -ge 1 ] || usage
 NAME="$1"
 shift
 case "$NAME" in
-    test-floor|semver-check|family-check|guest-rust-toolchain|ci-gate) ;;
+    test-floor|semver-check|family-check|guest-rust-toolchain|ci-gate|stage-siblings|guest-rust-run|package-cli) ;;
     *) echo "core.sh: rust-fs-core has no family script named '$NAME'." >&2; usage ;;
 esac
 SCRIPT_REL="scripts/$NAME.sh"
@@ -75,9 +79,9 @@ try:
 except Exception:
     sys.exit(0)
 print(next((p["manifest_path"].rsplit("/", 1)[0]
-            for p in packages if p["name"] == "am-fs-core"), ""))
+            for p in packages if p["name"] in ("rust-fs-core", "am-fs-core")), ""))
 ' || true)"
-    [ -n "$CORE_DIR" ] || die "cargo could not say where am-fs-core is."
+    [ -n "$CORE_DIR" ] || die "cargo could not say where rust-fs-core is."
     SOURCE="$CORE_DIR/$SCRIPT_REL"
 fi
 

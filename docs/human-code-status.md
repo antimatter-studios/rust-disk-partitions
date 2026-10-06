@@ -18,7 +18,7 @@ predates the work; this is the current position. Updated 2026-08-30.
 
 ### H1 — `include/partitions.h` declared a `PartitionInfo` 16 bytes short — **fixed earlier**
 
-[#10](https://github.com/antimatter-studios/rust-partitions/pull/10). A C
+[#10](https://github.com/antimatter-studios/rust-disk-partitions/pull/10). A C
 consumer compiled against that header read every field after the short one from
 the wrong offset.
 
@@ -110,7 +110,7 @@ what 34 is: protective MBR + header + the 32-sector entry array.
 ### M12 — `capi.rs` re-rolls the FFI panic guard five times while `ffi_guard` sits imported — **needs your decision**
 
 Clear-cut on the face of it, but `ffi_guard` returns a code and these return
-pointers — the same shape as `am-fs-core`'s M1. Fixing it properly means adding
+pointers — the same shape as `rust-fs-core`'s M1. Fixing it properly means adding
 a pointer-returning guard to `fs-core`, which is a change to another crate.
 
 ### M5 — `SECTOR_SIZE` defined three times and then ignored eight — **fixed**

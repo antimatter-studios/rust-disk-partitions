@@ -204,8 +204,8 @@ impl Image {
     }
 
     /// The device this crate writes through.
-    pub fn device(&self) -> partitions::FileBlock {
-        partitions::FileBlock::open_rw(&self.path).expect("open image read-write")
+    pub fn device(&self) -> disk_partitions::FileBlock {
+        disk_partitions::FileBlock::open_rw(&self.path).expect("open image read-write")
     }
 }
 

@@ -1,5 +1,5 @@
 /*
- * am-partitions C ABI — GPT/MBR partition probe and FS-magic sniffer
+ * rust-disk-partitions C ABI — GPT/MBR partition probe and FS-magic sniffer
  * over any FsCoreDevice handle.
  *
  * Workflow:
@@ -13,7 +13,7 @@
  *   6. fs_core_device_close(slice), partitions_list_free(list),
  *      fs_core_device_close(dev)
  *
- * Link with libpartitions.a and include this header alongside fs_core.h.
+ * Link with libdisk_partitions.a and include this header alongside fs_core.h.
  *
  * `chore staticlib` builds that library and copies both headers beside
  * it; `chore artifact` prints the absolute path of the directory

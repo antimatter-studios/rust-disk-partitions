@@ -1,7 +1,7 @@
 //! Round-trip tests for the write side: mutate → commit → re-probe.
 
-use partitions::gpt::{type_guids, BackupStatus};
-use partitions::{
+use disk_partitions::gpt::{type_guids, BackupStatus};
+use disk_partitions::{
     gpt, probe, BlockDevice, BlockRead, Error, Partition, PartitionKind, PartitionRef,
     PartitionSet, PartitionTypeId, TableKind,
 };
@@ -476,7 +476,7 @@ fn a_zero_length_partition_is_refused_not_underflowed() {
     }
 }
 
-fn span_of(start: u64, length: u64) -> partitions::Result<(u64, u64)> {
+fn span_of(start: u64, length: u64) -> disk_partitions::Result<(u64, u64)> {
     Partition {
         start,
         length,
@@ -573,7 +573,7 @@ fn overflowing_gpt_partition() -> Partition {
 #[test]
 fn write_gpt_refuses_a_span_that_leaves_a_u64_rather_than_wrapping_it() {
     let dev = MemDev::new(DISK_64M as usize);
-    match partitions::gpt_write::write_gpt(&dev, &[overflowing_gpt_partition()], [1u8; 16]) {
+    match disk_partitions::gpt_write::write_gpt(&dev, &[overflowing_gpt_partition()], [1u8; 16]) {
         Err(Error::Invalid(_)) => {}
         other => panic!(
             "write_gpt gave {other:?} for a partition whose span leaves a u64 — \
@@ -610,7 +610,11 @@ fn write_gpt_refuses_an_overflowing_span_beside_a_real_partition() {
         issues: 0,
         available_length: 4 * ONE_MIB,
     };
-    match partitions::gpt_write::write_gpt(&dev, &[sound, overflowing_gpt_partition()], [1u8; 16]) {
+    match disk_partitions::gpt_write::write_gpt(
+        &dev,
+        &[sound, overflowing_gpt_partition()],
+        [1u8; 16],
+    ) {
         Err(Error::Invalid(_)) => {}
         other => panic!("write_gpt gave {other:?} for an overflowing span"),
     }
@@ -638,7 +642,7 @@ fn write_mbr_refuses_a_span_that_leaves_a_u64() {
         issues: 0,
         available_length: 1024,
     };
-    match partitions::mbr::write_mbr(&dev, &[p]) {
+    match disk_partitions::mbr::write_mbr(&dev, &[p]) {
         Err(Error::Invalid(_)) => {}
         other => panic!("write_mbr gave {other:?} for a partition whose span leaves a u64"),
     }
@@ -665,7 +669,7 @@ fn committing_an_unchanged_table_leaves_every_partition_in_its_slot() {
     let dev = MemDev::new(DISK_64M as usize);
     let a = gpt_partition(4 * ONE_MIB, 4 * ONE_MIB, "a", 1, Some(0));
     let c = gpt_partition(16 * ONE_MIB, 4 * ONE_MIB, "c", 3, Some(2));
-    partitions::gpt_write::write_gpt(&dev, &[a, c], [5u8; 16]).unwrap();
+    disk_partitions::gpt_write::write_gpt(&dev, &[a, c], [5u8; 16]).unwrap();
 
     let (_, parts) = probe(&dev).unwrap();
     assert_eq!(
@@ -700,7 +704,7 @@ fn removing_a_partition_does_not_renumber_the_ones_after_it() {
         gpt_partition(12 * ONE_MIB, 4 * ONE_MIB, "b", 2, Some(1)),
         gpt_partition(20 * ONE_MIB, 4 * ONE_MIB, "c", 3, Some(2)),
     ];
-    partitions::gpt_write::write_gpt(&dev, &parts, [5u8; 16]).unwrap();
+    disk_partitions::gpt_write::write_gpt(&dev, &parts, [5u8; 16]).unwrap();
 
     let mut set = PartitionSet::from_probe(&dev).unwrap();
     set.remove(PartitionRef::Index(1)).unwrap();
@@ -725,7 +729,7 @@ fn removing_a_partition_does_not_renumber_the_ones_after_it() {
 fn a_new_partition_takes_the_lowest_free_slot() {
     let dev = MemDev::new(DISK_64M as usize);
     let occupied = gpt_partition(20 * ONE_MIB, 4 * ONE_MIB, "kept", 1, Some(2));
-    partitions::gpt_write::write_gpt(&dev, &[occupied], [5u8; 16]).unwrap();
+    disk_partitions::gpt_write::write_gpt(&dev, &[occupied], [5u8; 16]).unwrap();
 
     let mut set = PartitionSet::from_probe(&dev).unwrap();
     set.add(
@@ -757,7 +761,7 @@ fn two_partitions_claiming_one_slot_are_refused() {
     let dev = MemDev::new(DISK_64M as usize);
     let a = gpt_partition(4 * ONE_MIB, 4 * ONE_MIB, "a", 1, Some(1));
     let b = gpt_partition(12 * ONE_MIB, 4 * ONE_MIB, "b", 2, Some(1));
-    match partitions::gpt_write::write_gpt(&dev, &[a, b], [5u8; 16]) {
+    match disk_partitions::gpt_write::write_gpt(&dev, &[a, b], [5u8; 16]) {
         Err(Error::Invalid(_)) => {}
         other => panic!("two partitions in slot 1 gave {other:?}"),
     }
@@ -1038,7 +1042,7 @@ fn hybrid_disk(marker_slot: usize, mirror_slot: usize) -> (MemDev, u64, u64) {
         (length / 512) as u32,
     );
     assert_eq!(
-        partitions::probe(&dev).unwrap().0,
+        disk_partitions::probe(&dev).unwrap().0,
         TableKind::Gpt,
         "fixture: the disk must probe as GPT, or this tests the MBR path again"
     );
@@ -1115,7 +1119,7 @@ fn a_full_lba0_with_no_marker_is_refused_not_overwritten() {
         set.reserved
     );
     assert!(
-        matches!(set.commit(&dev), Err(partitions::Error::Invalid(_))),
+        matches!(set.commit(&dev), Err(disk_partitions::Error::Invalid(_))),
         "a commit with no slot for the marker must be refused"
     );
     assert_eq!(lba0(&dev), before, "a refused commit must not touch LBA 0");
@@ -1132,7 +1136,7 @@ fn a_reserved_entry_past_slot_three_is_refused_on_a_gpt_commit() {
     set.reserved.push(entry);
     assert!(matches!(
         set.commit(&dev),
-        Err(partitions::Error::Invalid(_))
+        Err(disk_partitions::Error::Invalid(_))
     ));
 }
 
@@ -1262,7 +1266,7 @@ fn a_probed_table_with_a_container_is_full_at_three_volumes() {
 #[test]
 fn the_mbr_writer_counts_preserved_entries_against_the_four_slots() {
     let dev = MemDev::new(DISK_64M as usize);
-    let reserved = [partitions::mbr::ReservedEntry {
+    let reserved = [disk_partitions::mbr::ReservedEntry {
         slot: 3,
         bytes: [0u8; 16],
     }];
@@ -1282,7 +1286,7 @@ fn the_mbr_writer_counts_preserved_entries_against_the_four_slots() {
             available_length: ONE_MIB,
         });
     }
-    match partitions::mbr::write_mbr_preserving(&dev, &parts, &reserved) {
+    match disk_partitions::mbr::write_mbr_preserving(&dev, &parts, &reserved) {
         Err(Error::Invalid(m)) => assert!(
             m.contains("at most 4 primary partitions"),
             "refused, but not as a full table: {m}"
@@ -1295,7 +1299,7 @@ fn the_mbr_writer_counts_preserved_entries_against_the_four_slots() {
 // The table's shape survives a round trip
 // ---------------------------------------------------------------------------
 
-use partitions::gpt_write::{self, write_gpt_with_geometry, GptGeometry};
+use disk_partitions::gpt_write::{self, write_gpt_with_geometry, GptGeometry};
 
 /// The header fields that describe the table's shape.
 fn gpt_shape(dev: &MemDev) -> (u32, u32, u64, u64, u64) {
@@ -2381,10 +2385,10 @@ fn sorted(mut parts: Vec<Partition>) -> String {
 #[test]
 fn an_intact_gpt_is_read_from_the_primary_with_the_backup_agreeing() {
     let (dev, before) = two_partition_gpt();
-    let (kind, parts, source) = partitions::probe_with_status(&dev).unwrap();
+    let (kind, parts, source) = disk_partitions::probe_with_status(&dev).unwrap();
     assert_eq!(
         (kind, source),
-        (TableKind::Gpt, partitions::TableSource::Primary)
+        (TableKind::Gpt, disk_partitions::TableSource::Primary)
     );
     assert_eq!(sorted(parts), before);
 }
@@ -2401,12 +2405,12 @@ fn a_damaged_primary_is_recovered_from_the_backup_and_reported() {
             probe(&dev).is_err(),
             "{what}: probe must still refuse the primary"
         );
-        let (kind, parts, source) = partitions::probe_with_status(&dev)
+        let (kind, parts, source) = disk_partitions::probe_with_status(&dev)
             .unwrap_or_else(|e| panic!("{what}: the backup was not used: {e}"));
         assert_eq!(kind, TableKind::Gpt);
         assert_eq!(
             source,
-            partitions::TableSource::RecoveredFromBackup,
+            disk_partitions::TableSource::RecoveredFromBackup,
             "{what}"
         );
         assert_eq!(sorted(parts), before, "{what}: the backup's partitions");
@@ -2415,8 +2419,8 @@ fn a_damaged_primary_is_recovered_from_the_backup_and_reported() {
     // The primary header gone altogether, behind its protective MBR.
     let (dev, before) = two_partition_gpt();
     dev.write_at(512, &[0u8; 512]).unwrap();
-    let (_, parts, source) = partitions::probe_with_status(&dev).unwrap();
-    assert_eq!(source, partitions::TableSource::RecoveredFromBackup);
+    let (_, parts, source) = disk_partitions::probe_with_status(&dev).unwrap();
+    assert_eq!(source, disk_partitions::TableSource::RecoveredFromBackup);
     assert_eq!(sorted(parts), before);
 }
 
@@ -2428,9 +2432,9 @@ fn a_stale_or_destroyed_backup_is_reported_beside_the_primary() {
     let last_lba = dev.size_bytes() / 512 - 1;
     dev.write_at((last_lba - 32) * 512, &vec![0u8; 33 * 512])
         .unwrap();
-    let (_, parts, source) = partitions::probe_with_status(&dev).unwrap();
+    let (_, parts, source) = disk_partitions::probe_with_status(&dev).unwrap();
     assert!(
-        matches!(source, partitions::TableSource::PrimaryBackupStale(_)),
+        matches!(source, disk_partitions::TableSource::PrimaryBackupStale(_)),
         "a destroyed backup was reported as {source:?}"
     );
     assert_eq!(sorted(parts), before, "the primary's partitions");
@@ -2445,7 +2449,7 @@ fn both_copies_damaged_is_the_primarys_error() {
     let last_lba = dev.size_bytes() / 512 - 1;
     flip(&dev, last_lba * 512 + 16);
     assert!(matches!(
-        partitions::probe_with_status(&dev),
+        disk_partitions::probe_with_status(&dev),
         Err(Error::GptHeaderCrc)
     ));
 }
@@ -2457,17 +2461,17 @@ fn an_mbr_disk_reports_its_source_as_mbr() {
     set.add(None, 4 * ONE_MIB, PartitionTypeId::LinuxFilesystem, None)
         .unwrap();
     set.commit(&dev).unwrap();
-    let (kind, _, source) = partitions::probe_with_status(&dev).unwrap();
+    let (kind, _, source) = disk_partitions::probe_with_status(&dev).unwrap();
     assert_eq!(
         (kind, source),
-        (TableKind::Mbr, partitions::TableSource::Mbr)
+        (TableKind::Mbr, disk_partitions::TableSource::Mbr)
     );
 }
 
 /// The C ABI probes with the backup consulted and hands the source over.
 #[test]
 fn the_c_abi_recovers_from_the_backup_and_reports_the_source() {
-    use partitions::capi::*;
+    use disk_partitions::capi::*;
     use std::sync::Arc;
 
     let (dev, _) = two_partition_gpt();

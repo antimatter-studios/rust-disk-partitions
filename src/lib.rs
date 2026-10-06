@@ -1,7 +1,7 @@
 //! Partition-table probe (GPT/MBR) and filesystem-magic sniffer over any
 //! random-access block source.
 //!
-//! See the crate-level [`README`](https://github.com/antimatter-studios/rust-partitions)
+//! See the crate-level [`README`](https://github.com/antimatter-studios/rust-disk-partitions)
 //! for design and scope.
 //!
 //! Block-device abstractions come from

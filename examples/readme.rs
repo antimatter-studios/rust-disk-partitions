@@ -7,7 +7,7 @@
 // README's block and the code below this header differ.
 //
 //   cargo run --example readme
-use partitions::{probe, sniff, FileBlock};
+use disk_partitions::{probe, sniff, FileBlock};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dev = FileBlock::open("disk.img")?;

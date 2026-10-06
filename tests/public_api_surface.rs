@@ -34,9 +34,9 @@
 //! the crate works while doing nothing for a consumer who has to fill
 //! the field in regardless.
 
-use partitions::capi::PartitionInfo;
-use partitions::mutation::PartitionSet;
-use partitions::{Partition, PartitionKind, TableKind};
+use disk_partitions::capi::PartitionInfo;
+use disk_partitions::mutation::PartitionSet;
+use disk_partitions::{Partition, PartitionKind, TableKind};
 
 /// Every field of `Partition`, named.
 #[test]
@@ -88,7 +88,7 @@ fn partition_set_has_exactly_the_fields_the_changelog_documents() {
         disk_size: 1 << 20,
         disk_guid: [0u8; 16],
         gpt_entry_tails: Default::default(),
-        gpt_geometry: partitions::gpt_write::GptGeometry::canonical(),
+        gpt_geometry: disk_partitions::gpt_write::GptGeometry::canonical(),
         reserved: Vec::new(),
     };
 
@@ -109,7 +109,7 @@ fn partition_set_has_exactly_the_fields_the_changelog_documents() {
     assert!(gpt_entry_tails.is_empty());
     assert_eq!(
         gpt_geometry,
-        partitions::gpt_write::GptGeometry::canonical()
+        disk_partitions::gpt_write::GptGeometry::canonical()
     );
     assert!(reserved.is_empty());
 }

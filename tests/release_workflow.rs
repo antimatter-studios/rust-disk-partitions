@@ -6,7 +6,7 @@
 //! dependency with a newer semver-compatible release since `Cargo.lock`
 //! was last updated was picked up silently (#87).
 //!
-//! The same workflow cloned the `am-fs-core` sibling at a tag written
+//! The same workflow cloned the `rust-fs-core` sibling at a tag written
 //! out twice, once per job, so a bump made in one place gave the two
 //! jobs different siblings — the publish job building against a crate
 //! the test job never saw.

@@ -3,7 +3,7 @@ chore_min_version: 0.6.0
 
 # THE CONTRACT THIS FILE EXISTS TO OWN.
 #
-# How to build rust-partitions is knowledge that belongs to rust-partitions.
+# How to build rust-disk-partitions is knowledge that belongs to rust-disk-partitions.
 # `staticlib` is the whole interface a consumer needs, AND IT TAKES NO
 # OUTPUT DIRECTORY: it builds into this crate's own dist/, `chore artifact`
 # prints the absolute path of that DIRECTORY, and a consumer copies its
@@ -12,28 +12,28 @@ chore_min_version: 0.6.0
 #
 # `artifact` PRINTS A DIRECTORY, NOT A FILE. That is the one place this
 # differs from rust-blk-probe, whose single binary lets its `artifact` name a
-# file: this crate produces libpartitions.a AND the headers beside it, so
+# file: this crate produces libdisk_partitions.a AND the headers beside it, so
 # there is no single path to name.
 #
 # NO KNOWN CONSUMER LINKS THIS ARCHIVE TODAY, and that is worth saying
 # rather than leaving a reader to wonder why the task exists. Consumers
-# take am-partitions as a CRATE — through rust-disk-probe, and as a
+# take rust-disk-partitions as a CRATE — through rust-disk-probe, and as a
 # dev-dependency of the img readers' `inspect` example — so it arrives
 # already linked inside somebody else's output. The task is here for
 # uniformity, for anyone building this crate on its own, and because the
 # moment a consumer does want the archive it should not have to learn the
 # triple.
 #
-# WHY fs_core.h IS COPIED TOO. include/partitions.h opens with
+# WHY fs_core.h IS COPIED TOO. include/disk_partitions.h opens with
 # `#include "fs_core.h"` — the probe reads through a FsCoreDevice — so a
-# consumer given only partitions.h cannot compile. The path below is the same
-# one Cargo.toml resolves am-fs-core from, and NOTHING CHECKS THAT THE TWO
+# consumer given only disk_partitions.h cannot compile. The path below is the same
+# one Cargo.toml resolves rust-fs-core from, and NOTHING CHECKS THAT THE TWO
 # AGREE.
 vars:
   TRIPLE: aarch64-apple-darwin
-  # `[package].name` is am-partitions; `[lib].name` is partitions, so cargo
-  # writes libpartitions.a. The header mirrors the lib name.
-  LIBNAME: partitions
+  # `[package].name` is rust-disk-partitions; `[lib].name` is partitions, so cargo
+  # writes libdisk_partitions.a. The header mirrors the lib name.
+  LIBNAME: disk_partitions
 
 tasks:
   staticlib:
@@ -174,10 +174,13 @@ tasks:
   # `test:scripts` has no budget and no floor on purpose: it prints one PASS
   # line per check rather than cargo's `test result:` lines, so the floor
   # would read zero for a tier that ran everything.
+  # BUDGET: 491 lines, 28333 bytes measured in release once the crate moved
+  # to rust-fs-core 0.3.0 (run 37439858374); both profiles print the same
+  # shape, so both carry 520 lines and 30000 bytes.
   test:
     desc: The suite, in debug, where overflow checks are on
     cmds:
-      - 'scripts/tier.sh "test (debug)" debug 440 28000 -- cargo test --locked --all-targets'
+      - 'scripts/tier.sh "test (debug)" debug 520 30000 -- cargo test --locked --all-targets'
       - 'bash scripts/core.sh test-floor debug 258'
 
   test:release:
@@ -186,7 +189,7 @@ tasks:
     # wrap silently in release, and this crate's inputs are numbers off a
     # disk. tests/ci_profile.rs holds the debug run to being a debug run.
     cmds:
-      - 'scripts/tier.sh "test (release)" release 440 28000 -- cargo test --locked --release --all-targets'
+      - 'scripts/tier.sh "test (release)" release 520 30000 -- cargo test --locked --release --all-targets'
       - 'bash scripts/core.sh test-floor release 258'
 
   test:oracle:
@@ -220,7 +223,7 @@ tasks:
     #
     # IT PRINTS A DIRECTORY, NOT A FILE, and that is the one place this differs
     # from rust-blk-probe's `artifact`. That crate produces a single binary, so
-    # it can name a file. This one produces libpartitions.a AND the headers
+    # it can name a file. This one produces libdisk_partitions.a AND the headers
     # beside it, so there is no single path to name — A CONSUMER COPIES THE
     # CONTENTS of what this prints. A consumer that treats it as a file path
     # will silently copy the wrong thing.

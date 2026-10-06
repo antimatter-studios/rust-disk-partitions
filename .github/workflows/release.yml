@@ -10,9 +10,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # The am-fs-core tag both jobs clone. Stated once so a bump cannot give
+  # The rust-fs-core tag both jobs clone. Stated once so a bump cannot give
   # the test and publish jobs different siblings (#87).
-  FS_CORE_REF: v0.2.18
+  FS_CORE_REF: v0.3.0
 
 jobs:
   test:
@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: clone am-fs-core sibling
+      - name: clone rust-fs-core sibling
         shell: bash
         run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
 
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - name: clone am-fs-core sibling (path dep)
+      - name: clone rust-fs-core sibling (path dep)
         shell: bash
         run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-27
@@ -79,10 +79,31 @@ jobs:
         shell: bash
         run: cargo package --locked --no-verify
 
+      # ALREADY PUBLISHED IS NOT A FAILURE. A crate's first version under a
+      # new name cannot come from here: trusted publishing needs the crate to
+      # exist before its publisher can be registered, so that version is
+      # published by hand from this tag's commit. The run then has nothing to
+      # upload, and the checksum step below still holds the version crates.io
+      # serves to the archive built here.
+      - name: is this version already on crates.io
+        id: published
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$(grep -m1 '^name = ' Cargo.toml | sed 's/name = //; s/"//g')"
+          version="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = //; s/"//g')"
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            -A "${GITHUB_REPOSITORY} release (github.com/${GITHUB_REPOSITORY})" \
+            "https://crates.io/api/v1/crates/$name/$version")"
+          echo "crates.io answered $code for $name $version"
+          if [ "$code" = 200 ]; then echo "already=true" >> "$GITHUB_OUTPUT"; else echo "already=false" >> "$GITHUB_OUTPUT"; fi
+
       - uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        if: steps.published.outputs.already != 'true'
         id: auth
 
       - name: cargo publish
+        if: steps.published.outputs.already != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         # --locked: publish the dependency graph the test job verified,

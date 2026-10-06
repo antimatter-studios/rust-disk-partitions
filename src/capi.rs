@@ -201,7 +201,7 @@ pub struct PartitionInfo {
     pub available_length: u64,
 }
 
-// The C declaration of the struct above lives in `include/partitions.h` and
+// The C declaration of the struct above lives in `include/disk_partitions.h` and
 // is maintained by hand, so the two can drift without anything complaining.
 // These pin the Rust side; `tests/c_abi.rs` compiles the header and pins the
 // C side against the same numbers. Changing the size here is a C ABI break —

@@ -90,24 +90,24 @@ fn targets() -> Vec<Target> {
                 // Both device sizes: 0 is a device that stated nothing
                 // about itself, and the fuzzed one exercises the clamp
                 // that fills `available_length` (#38).
-                let _ = partitions::mbr::parse(&sector, 0);
-                let _ = partitions::mbr::parse(&sector, fuzzed_device_size(&sector));
-                let _ = partitions::mbr::is_protective(&sector);
-                let _ = partitions::mbr::has_gpt_marker(&sector);
+                let _ = disk_partitions::mbr::parse(&sector, 0);
+                let _ = disk_partitions::mbr::parse(&sector, fuzzed_device_size(&sector));
+                let _ = disk_partitions::mbr::is_protective(&sector);
+                let _ = disk_partitions::mbr::has_gpt_marker(&sector);
             },
         },
         Target {
             corpus: "gpt_header",
             name: "gpt_header",
             run: |b| {
-                let _ = partitions::gpt::parse_header(&as_sector(b));
+                let _ = disk_partitions::gpt::parse_header(&as_sector(b));
             },
         },
         Target {
             corpus: "sniff",
             name: "sniff",
             run: |b| {
-                let _ = partitions::sniff::classify(b);
+                let _ = disk_partitions::sniff::classify(b);
             },
         },
     ]
@@ -124,12 +124,12 @@ fn targets() -> Vec<Target> {
 ///
 /// The same eight bytes the `mbr` fuzz target uses, so the explorer and
 /// this gate feed the decoder the same pair of sizes for a given case.
-fn fuzzed_device_size(sector: &[u8; partitions::SECTOR_SIZE_USIZE]) -> u64 {
+fn fuzzed_device_size(sector: &[u8; disk_partitions::SECTOR_SIZE_USIZE]) -> u64 {
     u64::from_le_bytes(sector[..8].try_into().unwrap())
 }
 
-fn as_sector(data: &[u8]) -> [u8; partitions::SECTOR_SIZE_USIZE] {
-    let mut sector = [0u8; partitions::SECTOR_SIZE_USIZE];
+fn as_sector(data: &[u8]) -> [u8; disk_partitions::SECTOR_SIZE_USIZE] {
+    let mut sector = [0u8; disk_partitions::SECTOR_SIZE_USIZE];
     let take = data.len().min(sector.len());
     sector[..take].copy_from_slice(&data[..take]);
     sector
@@ -302,10 +302,10 @@ fn every_target_has_a_corpus() {
 fn every_committed_disk_probes_to_the_table_the_tool_wrote() {
     // What each image was built with, from scripts/make-fuzz-corpus.sh.
     let expected = [
-        ("gpt.img", partitions::TableKind::Gpt, 3usize),
-        ("gpt-many.img", partitions::TableKind::Gpt, 16),
-        ("gpt-with-fs.img", partitions::TableKind::Gpt, 1),
-        ("mbr.img", partitions::TableKind::Mbr, 4),
+        ("gpt.img", disk_partitions::TableKind::Gpt, 3usize),
+        ("gpt-many.img", disk_partitions::TableKind::Gpt, 16),
+        ("gpt-with-fs.img", disk_partitions::TableKind::Gpt, 1),
+        ("mbr.img", disk_partitions::TableKind::Mbr, 4),
         // ONE, not five, and deliberately.
         //
         // `sfdisk` wrote a primary, an extended container and three
@@ -321,7 +321,7 @@ fn every_committed_disk_probes_to_the_table_the_tool_wrote() {
         // declines to follow it. And when the chain walk does land,
         // this number changes and this test says so, rather than the
         // new code arriving with nothing measuring it.
-        ("mbr-extended.img", partitions::TableKind::Mbr, 1),
+        ("mbr-extended.img", disk_partitions::TableKind::Mbr, 1),
     ];
 
     let disks = seeds("device");
@@ -340,7 +340,7 @@ fn every_committed_disk_probes_to_the_table_the_tool_wrote() {
             .unwrap_or_else(|| panic!("{name} is not one of the disks the script builds"));
 
         let dev = Bytes(bytes);
-        let (kind, found) = partitions::probe(&dev).unwrap_or_else(|e| {
+        let (kind, found) = disk_partitions::probe(&dev).unwrap_or_else(|e| {
             panic!(
                 "{name}: a disk {} wrote would not probe: {e}",
                 if name.starts_with("gpt") {
@@ -378,13 +378,13 @@ fn the_sniffer_agrees_with_the_tool_that_made_each_window() {
 
     for (name, bytes) in windows {
         let stem = name.strip_suffix(".bin").unwrap_or(&name);
-        let got = partitions::sniff::classify(&bytes);
+        let got = disk_partitions::sniff::classify(&bytes);
         let ok = match stem {
-            "ext2" => matches!(got, partitions::FsKind::Ext { .. }),
-            "fat16" => got == partitions::FsKind::Fat16,
-            "fat32" => got == partitions::FsKind::Fat32,
-            "swap" => got == partitions::FsKind::LinuxSwap,
-            "squashfs" => got == partitions::FsKind::Squashfs,
+            "ext2" => matches!(got, disk_partitions::FsKind::Ext { .. }),
+            "fat16" => got == disk_partitions::FsKind::Fat16,
+            "fat32" => got == disk_partitions::FsKind::Fat32,
+            "swap" => got == disk_partitions::FsKind::LinuxSwap,
+            "squashfs" => got == disk_partitions::FsKind::Squashfs,
             other => panic!(
                 "the window {other}.bin is not one the script makes, so nothing knows what \
                  it should classify as"

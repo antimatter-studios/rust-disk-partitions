@@ -84,7 +84,7 @@ fn read_or_panic(path: &Path) -> String {
     })
 }
 
-/// The independent declarations of the am-fs-core version. The site count
+/// The independent declarations of the rust-fs-core version. The site count
 /// matters: removing a declaration must not leave a vacuous agreement.
 const FS_CORE_PIN_SITES: &[(&str, usize)] = &[
     ("Cargo.toml", 1),
@@ -101,7 +101,7 @@ fn fs_core_versions_declared(text: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|line| !line.starts_with('#'))
     {
-        if line.contains("am-fs-core") {
+        if line.contains("rust-fs-core") {
             if let Some(after) = line.split_once("version = \"") {
                 if let Some(version) = after.1.split('"').next().and_then(fs_core_version) {
                     versions.push(version);
@@ -144,7 +144,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
         assert_eq!(
             versions.len(),
             expected_sites,
-            "{file}: expected {expected_sites} am-fs-core pin declarations, found {versions:?}; update the guard if a declaration moved"
+            "{file}: expected {expected_sites} rust-fs-core pin declarations, found {versions:?}; update the guard if a declaration moved"
         );
         declarations.extend(versions.into_iter().map(|version| (file, version)));
     }
@@ -152,7 +152,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
     for (file, version) in &declarations {
         assert_eq!(
             version, agreed,
-            "{file}: am-fs-core pin {version} disagrees with {}: {agreed}",
+            "{file}: rust-fs-core pin {version} disagrees with {}: {agreed}",
             declarations[0].0
         );
     }
@@ -160,7 +160,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
 
 #[test]
 fn fs_core_pin_reader_finds_each_spelling_without_counting_comments_or_variables() {
-    let declarations = "am-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n\
+    let declarations = "rust-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n\
 FS_CORE_REF: v0.2.13\n\
 run: git clone --branch v0.2.13 https://example.test/rust-fs-core.git\n\
 run: git clone --branch \"$FS_CORE_REF\" https://example.test/rust-fs-core.git\n\

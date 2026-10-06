@@ -1,4 +1,4 @@
-# Human-code report — am-partitions
+# Human-code report — rust-disk-partitions
 
 > **This is analysis only. No code was changed.**
 > Phases 0 (Understand) and 1 (Scan and Triage) were run, then this document
@@ -9,7 +9,7 @@
 **Date:** 2026-08-28
 **Scope:** full crate — `src/` (9 files, 2 165 lines), `tests/` (3 files,
 1 063 lines), `include/partitions.h` (106 lines)
-**Crate:** `am-partitions` v0.3.3, lib name `partitions`, edition 2021,
+**Crate:** `rust-disk-partitions` v0.3.3, lib name `partitions`, edition 2021,
 toolchain pinned to 1.95.0
 
 | Count | |
