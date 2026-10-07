@@ -24,7 +24,17 @@ It does **not** mount anything, decode files, or write — it's a probe.
 - [x] FS sniff: ext2/3/4, NTFS, exFAT, FAT16, FAT32, HFS+, APFS, Linux swap, ISO 9660, SquashFS
 - [x] `SliceReader` adapter — rebases offsets on a sub-range of any `BlockRead` (planned to move into `rust-fs-core` since slicing is a generic block-layer concern; this crate will re-export for backwards compatibility)
 - [x] C ABI for FFI (`partitions_probe`, `partitions_count`, `partitions_table_kind`, `partitions_get`, `partitions_sniff`, `partitions_open_slice`, `partitions_list_free`; header in `include/partitions.h`)
-- [ ] LVM / LUKS / mdraid detection
+- [x] Linux software RAID (`md`): superblocks 0.90, 1.0, 1.1 and 1.2
+      (`md::read_superblock`), and `md::MdArray`, which assembles the
+      members into one `BlockRead` reading the bytes the kernel's `/dev/mdX`
+      would — RAID0 (one zone, or several in the `alternate` layout),
+      RAID1, RAID4, RAID5 (all six layouts), RAID6 (left-symmetric, with
+      up to two members missing) and RAID10 (near, far and offset copies),
+      the others each with one redundant member missing. Checked byte for
+      byte against arrays the kernel built (`tests/oracle_md.rs`). Not
+      yet: linear, multi-zone RAID0 in the `original` layout, and arrays
+      mid-reshape, all refused by name
+- [ ] LVM / LUKS detection
 - [ ] Logical-partition (extended MBR) chain walking. Until it exists,
       `mbr::parse` and `probe` leave the extended container itself out of
       the list rather than reporting it as if it were one of the volumes
@@ -72,6 +82,7 @@ src/
   gpt.rs        GPT header + entry array parser, backup-header validator
   gpt_write.rs  GPT writer (protective MBR + primary + backup, CRCs)
   mbr.rs        MBR parser + writer
+  md.rs         Linux md superblocks + read-only array assembly
   mutation.rs   PartitionSet — in-memory add/remove/resize + commit
   sniff.rs      filesystem magic-byte sniffer
   probe.rs      top-level dispatch (try GPT, fall back to MBR)

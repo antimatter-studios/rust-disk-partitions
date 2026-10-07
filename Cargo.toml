@@ -78,6 +78,13 @@ oracle = []
 name = "oracle_tools"
 required-features = ["oracle"]
 
+# md arrays against the kernel's /dev/mdX. Same feature, same job: the
+# arrays are built there under sudo by scripts/make-md-oracle.sh first,
+# and the target fails rather than skips when they are absent.
+[[test]]
+name = "oracle_md"
+required-features = ["oracle"]
+
 [profile.release]
 lto = true
 codegen-units = 1
