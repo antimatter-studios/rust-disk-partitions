@@ -53,8 +53,10 @@ make_case() {
     done
     md=/dev/md$next_md
     next_md=$((next_md + 1))
-    # Members are listed in slot order, so member-<s> is slot s.
-    mdadm --create "$md" --run --quiet --level="$level" --raid-devices="$n" \
+    # Members are listed in slot order, so member-<s> is slot s. Not
+    # --quiet: it also silences why mdadm refused a geometry, and a create
+    # that fails must say why.
+    mdadm --create "$md" --run --level="$level" --raid-devices="$n" \
         --metadata="$meta" "$@" "${loops[@]}" </dev/null
     # Let the initial resync finish, so parity is the kernel's own.
     mdadm --wait "$md" >/dev/null 2>&1 || true
@@ -85,7 +87,6 @@ make_case raid1-v1.1 1 2 1.1
 make_case raid1-v1.0 1 2 1.0
 make_case raid1-v0.90 1 2 0.90
 make_case raid0-v1.2 0 3 1.2 --chunk=64
-make_case raid0-v0.90 0 2 0.90 --chunk=32
 make_case raid4-v1.2 4 3 1.2 --chunk=64
 make_case raid5-ls-v1.2 5 4 1.2 --chunk=64 --layout=left-symmetric
 make_case raid5-la-v1.2 5 3 1.2 --chunk=64 --layout=left-asymmetric

@@ -16,7 +16,7 @@ never does.
   mirror or from P. RAID10, linear, multi-zone RAID0, two missing RAID6
   members and mid-reshape arrays are refused by name (#151).
 - **The md reader is checked against the kernel.** `scripts/make-md-oracle.sh`
-  has `mdadm` build 16 arrays on loop devices, and `tests/oracle_md.rs`
+  has `mdadm` build 15 arrays on loop devices, and `tests/oracle_md.rs`
   requires every byte of each, whole and with each redundant member left
   out, to match the kernel's `/dev/mdX`, and every 1.x superblock to agree
   with `mdadm --examine`.

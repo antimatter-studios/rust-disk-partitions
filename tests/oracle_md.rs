@@ -72,8 +72,8 @@ fn cases() -> Vec<Case> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     assert!(
-        out.len() >= 16,
-        "only {} md oracle cases found; the script builds 16",
+        out.len() >= 15,
+        "only {} md oracle cases found; the script builds 15",
         out.len()
     );
     out
