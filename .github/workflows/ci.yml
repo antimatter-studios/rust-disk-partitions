@@ -250,6 +250,29 @@ jobs:
               echo "::error::only $f field comparisons ran, floor is 700 -- 775 ran on 2026-09-28, and a run that compares fewer has stopped finding fields rather than stopped disagreeing"
               exit 1
           fi
+      # THE KERNEL AS THE md ORACLE. scripts/make-md-oracle.sh has mdadm
+      # build arrays of every level and metadata version this crate reads
+      # on loop devices, writes random data through /dev/mdX, dumps it, and
+      # leaves the members as plain files. tests/oracle_md.rs assembles the
+      # files with this crate and requires the kernel's bytes back, whole
+      # and with each redundant member left out. It needs root and the md
+      # driver, which this runner has; the test fails, never skips, when
+      # the arrays are missing.
+      - name: build md arrays with the kernel
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends mdadm
+          sudo bash scripts/make-md-oracle.sh tmp/md-oracle
+      - name: build the md oracle tests
+        # Outside the budget, in a step of its own, for the same reason as
+        # `build the oracle tests` (#155).
+        run: cargo test --locked --features oracle --test oracle_md --no-run
+      - name: test the md oracle
+        shell: bash
+        # Two floors: both tests in the target must run, and the target
+        # itself asserts every one of the 15 arrays was compared.
+        run: |
+          bash ../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture
+          bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2
       - name: keep the tier logs
         if: always()
         uses: actions/upload-artifact@v4
