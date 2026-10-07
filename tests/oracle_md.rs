@@ -165,9 +165,23 @@ fn every_v1_superblock_agrees_with_mdadm_examine() {
                 .parse()
                 .unwrap();
             assert_eq!(sb.raid_disks, devices, "{what}: raid devices");
-            let offset = examine_field(&text, "Data Offset").expect("Data Offset");
-            let sectors: u64 = offset.split_whitespace().next().unwrap().parse().unwrap();
-            assert_eq!(sb.data_offset, sectors * 512, "{what}: data offset");
+            let sectors =
+                |v: &str| -> u64 { v.split_whitespace().next().unwrap().parse().unwrap() };
+            let super_offset = examine_field(&text, "Super Offset")
+                .unwrap_or_else(|| panic!("{what}: no Super Offset in\n{text}"));
+            assert_eq!(
+                sb.superblock_offset,
+                sectors(super_offset) * 512,
+                "{what}: superblock offset"
+            );
+            // mdadm prints no Data Offset line for 1.0, where the data
+            // starts at the beginning of the member (CI run 37622837093).
+            let data_offset = match examine_field(&text, "Data Offset") {
+                Some(v) => sectors(v) * 512,
+                None if sb.version == MdVersion::V1_0 => 0,
+                None => panic!("{what}: no Data Offset in\n{text}"),
+            };
+            assert_eq!(sb.data_offset, data_offset, "{what}: data offset");
             let role = examine_field(&text, "Device Role").expect("Device Role");
             assert_eq!(role, format!("Active device {slot}"), "{what}: device role");
             if let Some(chunk) = examine_field(&text, "Chunk Size") {
