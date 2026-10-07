@@ -27,6 +27,11 @@ never does.
   `alternate` layout. The `original` multi-zone layout, or none recorded,
   is refused. Eight more `mdadm` arrays check both against the kernel
   (#151).
+- **A RAID6 array reads with any two members missing.** Q is the
+  Reed-Solomon syndrome over GF(2^8) that "The mathematics of RAID-6"
+  describes, and a row that has lost two data chunks, or one with P, is
+  rebuilt from it. The kernel's RAID6 array is read with every pair of
+  members left out (#151).
 
 ### Fixed
 

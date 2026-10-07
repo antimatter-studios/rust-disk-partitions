@@ -28,11 +28,11 @@ It does **not** mount anything, decode files, or write — it's a probe.
       (`md::read_superblock`), and `md::MdArray`, which assembles the
       members into one `BlockRead` reading the bytes the kernel's `/dev/mdX`
       would — RAID0 (one zone, or several in the `alternate` layout),
-      RAID1, RAID4, RAID5 (all six layouts), RAID6 (left-symmetric) and
-      RAID10 (near, far and offset copies), each with one redundant member
-      missing. Checked byte for byte against arrays the kernel built
-      (`tests/oracle_md.rs`). Not yet: linear, multi-zone RAID0 in the
-      `original` layout, a RAID6 missing two members, and arrays
+      RAID1, RAID4, RAID5 (all six layouts), RAID6 (left-symmetric, with
+      up to two members missing) and RAID10 (near, far and offset copies),
+      the others each with one redundant member missing. Checked byte for
+      byte against arrays the kernel built (`tests/oracle_md.rs`). Not
+      yet: linear, multi-zone RAID0 in the `original` layout, and arrays
       mid-reshape, all refused by name
 - [ ] LVM / LUKS detection
 - [ ] Logical-partition (extended MBR) chain walking. Until it exists,

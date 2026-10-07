@@ -125,6 +125,18 @@ fn every_array_reads_the_bytes_the_kernel_wrote() {
                 compared += expect.len() as u64;
             }
         }
+        // RAID6 can lose any two: data through P and Q together, or
+        // through Q alone when P is one of the two.
+        if case.level == 6 {
+            for a in 0..case.members {
+                for b in a + 1..case.members {
+                    let some: Vec<usize> =
+                        all.iter().copied().filter(|&s| s != a && s != b).collect();
+                    compare(&case, &some, &expect);
+                    compared += expect.len() as u64;
+                }
+            }
+        }
         println!("md oracle: {} matches the kernel", case.name);
     }
     println!("md oracle: {compared} bytes compared");

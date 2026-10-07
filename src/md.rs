@@ -33,15 +33,20 @@
 //! | RAID1 | — | all but one |
 //! | RAID4 | parity on the last member | one |
 //! | RAID5 | left/right, symmetric/asymmetric, parity-first, parity-last | one |
-//! | RAID6 | left-symmetric (the `mdadm` default) | one |
+//! | RAID6 | left-symmetric (the `mdadm` default) | two, through P and Q |
 //! | RAID10 | near, far and offset copies | any, while one copy of every chunk is left |
 //!
 //! Anything else is refused by name with [`MdError::Unsupported`]: linear
 //! arrays, multi-zone RAID0 in the `original` layout or with no layout
-//! recorded, an array in the middle of a reshape, and a RAID6 with two
-//! members missing (which needs the Q syndrome rather than P). Refusing is
-//! the point: a layout read with the wrong geometry returns plausible bytes
+//! recorded, and an array in the middle of a reshape. Refusing is the
+//! point: a layout read with the wrong geometry returns plausible bytes
 //! from the wrong places.
+//!
+//! RAID6's second syndrome, Q, is the Reed-Solomon code over GF(2^8) that
+//! H. Peter Anvin's "The mathematics of RAID-6" describes: generator
+//! `{02}`, field polynomial `0x11d`, and data chunk `i` of a row weighted
+//! by `{02}^i`. Two lost chunks of a row are recovered with that paper's
+//! formulas.
 //!
 //! The array is read-only. Writing would have to keep parity, bitmaps and
 //! event counts consistent with what the kernel expects, and nothing here
@@ -526,6 +531,47 @@ fn parity_map(
     (dd as usize, pd as usize, None)
 }
 
+/// GF(2^8) over `x^8 + x^4 + x^3 + x^2 + 1`: `EXP[i]` is `{02}^i`, and
+/// `LOG` its inverse.
+const GF_EXP: [u8; 256] = gf_tables().0;
+const GF_LOG: [u8; 256] = gf_tables().1;
+
+const fn gf_tables() -> ([u8; 256], [u8; 256]) {
+    let mut exp = [0u8; 256];
+    let mut log = [0u8; 256];
+    let mut x: u16 = 1;
+    let mut i = 0;
+    while i < 255 {
+        exp[i] = x as u8;
+        log[x as usize] = i as u8;
+        x <<= 1;
+        if x & 0x100 != 0 {
+            x ^= 0x11d;
+        }
+        i += 1;
+    }
+    exp[255] = exp[0];
+    (exp, log)
+}
+
+/// `{02}^e`, for any exponent: the group has order 255.
+fn gf_pow2(e: i64) -> u8 {
+    GF_EXP[e.rem_euclid(255) as usize]
+}
+
+fn gf_mul(a: u8, b: u8) -> u8 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        GF_EXP[(usize::from(GF_LOG[usize::from(a)]) + usize::from(GF_LOG[usize::from(b)])) % 255]
+    }
+}
+
+/// The multiplicative inverse of a non-zero `a`.
+fn gf_inv(a: u8) -> u8 {
+    GF_EXP[(255 - usize::from(GF_LOG[usize::from(a)])) % 255]
+}
+
 struct Member<R> {
     dev: R,
     data_offset: u64,
@@ -802,16 +848,9 @@ impl<R: BlockRead> MdArray<R> {
                         lead.layout
                     )));
                 }
-                // One missing member is recovered through P. Two, on a
-                // RAID6, would need Q, which is not implemented.
-                if present + 1 < n {
-                    if level == LEVEL_RAID6 && present + 2 >= n {
-                        return Err(MdError::Unsupported(
-                            "RAID6 with two members missing (needs Q reconstruction)".into(),
-                        ));
-                    }
-                    need(n - 1)?;
-                }
+                // One missing member is recovered through P; a second, on
+                // a RAID6, through Q.
+                need(n - parity)?;
                 (per_member / chunk * chunk)
                     .checked_mul(u64::from(n - parity))
                     .ok_or_else(|| corrupt(0, "array size overflows"))?
@@ -925,8 +964,10 @@ impl<R: BlockRead> MdArray<R> {
         if self.read_member(dd, off, buf)? {
             return Ok(());
         }
-        // The data member is missing: XOR every other member in the row
-        // except Q, which is a different syndrome.
+        if self.level == LEVEL_RAID6 {
+            return self.rebuild_raid6(stripe, k % data, off, buf);
+        }
+        // The data member is missing: XOR every other member in the row.
         buf.fill(0);
         let mut tmp = vec![0u8; buf.len()];
         for slot in 0..n as usize {
@@ -941,6 +982,72 @@ impl<R: BlockRead> MdArray<R> {
             for (b, t) in buf.iter_mut().zip(&tmp) {
                 *b ^= t;
             }
+        }
+        Ok(())
+    }
+}
+
+impl<R: BlockRead> MdArray<R> {
+    /// Rebuild data chunk `x` of RAID6 row `stripe`, whose member is
+    /// missing, from what the row still holds: through P when every other
+    /// data chunk is there, through Q when P is missing too, and through
+    /// both when a second data chunk is missing.
+    fn rebuild_raid6(&self, stripe: u64, x: u64, off: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+        let n = self.slots.len() as u64;
+        let len = buf.len();
+        let (_, pd, qd) = parity_map(LEVEL_RAID6, self.layout, n, stripe, 0);
+        let qd = qd.expect("a RAID6 row has Q");
+        // P and Q with every data chunk that is present taken back out,
+        // leaving only the missing chunks' contributions.
+        let mut p = vec![0u8; len];
+        let mut q = vec![0u8; len];
+        let have_p = self.read_member(pd, off, &mut p)?;
+        let have_q = self.read_member(qd, off, &mut q)?;
+        let mut missing = Vec::new();
+        let mut d = vec![0u8; len];
+        for i in 0..n - 2 {
+            let (slot, _, _) = parity_map(LEVEL_RAID6, self.layout, n, stripe, i);
+            if !self.read_member(slot, off, &mut d)? {
+                missing.push(i);
+                continue;
+            }
+            let g = gf_pow2(i as i64);
+            for ((pb, qb), &db) in p.iter_mut().zip(q.iter_mut()).zip(&d) {
+                *pb ^= db;
+                *qb ^= gf_mul(g, db);
+            }
+        }
+        let lost = || {
+            fs_core::Error::Custom(format!(
+                "md: RAID6 row {stripe} has lost data chunks {missing:?}, P present {have_p}, Q present {have_q}"
+            ))
+        };
+        match missing.as_slice() {
+            [_] if have_p => buf.copy_from_slice(&p),
+            [_] if have_q => {
+                // Q' = {02}^x . D_x
+                let inv = gf_pow2(-(x as i64));
+                for (b, &qb) in buf.iter_mut().zip(&q) {
+                    *b = gf_mul(inv, qb);
+                }
+            }
+            &[a, b] if have_p && have_q => {
+                let y = if a == x { b } else { a };
+                // P' = D_x + D_y and Q' = g^x D_x + g^y D_y, so
+                // D_x = A P' + B Q' with A = g^(y-x) / (g^(y-x) + 1) and
+                // B = g^(-x) / (g^(y-x) + 1).
+                let gyx = gf_pow2(y as i64 - x as i64);
+                if gyx ^ 1 == 0 {
+                    return Err(lost());
+                }
+                let denom = gf_inv(gyx ^ 1);
+                let ca = gf_mul(gyx, denom);
+                let cb = gf_mul(gf_pow2(-(x as i64)), denom);
+                for ((out, &pb), &qb) in buf.iter_mut().zip(&p).zip(&q) {
+                    *out = gf_mul(ca, pb) ^ gf_mul(cb, qb);
+                }
+            }
+            _ => return Err(lost()),
         }
         Ok(())
     }
@@ -1105,11 +1212,17 @@ mod tests {
                 } else {
                     layout
                 };
-                let (dd, pd, _) = parity_map(level, lay, nn, k / data, k % data);
+                let (dd, pd, qd) = parity_map(level, lay, nn, k / data, k % data);
                 let off = (k / data) * CHUNK;
                 let p0 = DATA_OFFSET as usize + off as usize;
                 for (i, b) in src.iter().enumerate() {
                     members[pd][p0 + i] ^= b;
+                }
+                if let Some(qd) = qd {
+                    let g = gf_pow2((k % data) as i64);
+                    for (i, &b) in src.iter().enumerate() {
+                        members[qd][p0 + i] ^= gf_mul(g, b);
+                    }
                 }
                 (dd, off)
             };
@@ -1120,6 +1233,10 @@ mod tests {
     }
 
     fn check(level: i32, layout: u32, n: u32, drop: Option<usize>) {
+        check_without(level, layout, n, drop.as_slice());
+    }
+
+    fn check_without(level: i32, layout: u32, n: u32, drop: &[usize]) {
         let parity = match level {
             6 => 2,
             4 | 5 => 1,
@@ -1131,7 +1248,7 @@ mod tests {
         let devs: Vec<Mem> = members
             .into_iter()
             .enumerate()
-            .filter(|(i, _)| Some(*i) != drop)
+            .filter(|(i, _)| !drop.contains(i))
             .map(|(_, m)| Mem(m))
             .collect();
         let a = MdArray::assemble(devs).expect("assembles");
@@ -1161,12 +1278,27 @@ mod tests {
     }
 
     #[test]
-    fn raid4_and_raid6_read_back_with_one_member_missing() {
+    fn raid4_reads_back_with_one_member_missing_and_raid6_with_any_two() {
         check(4, 0, 3, None);
         check(4, 0, 3, Some(0));
         check(6, LAYOUT_LEFT_SYMMETRIC, 5, None);
-        for drop in 0..5 {
-            check(6, LAYOUT_LEFT_SYMMETRIC, 5, Some(drop));
+        for a in 0..5 {
+            check(6, LAYOUT_LEFT_SYMMETRIC, 5, Some(a));
+            for b in a + 1..5 {
+                check_without(6, LAYOUT_LEFT_SYMMETRIC, 5, &[a, b]);
+            }
+        }
+    }
+
+    #[test]
+    fn the_field_is_the_one_the_raid6_paper_uses() {
+        // {02}^8 reduces by 0x11d to 0x1d, and every non-zero element
+        // has an inverse.
+        assert_eq!(gf_pow2(8), 0x1d);
+        assert_eq!(gf_pow2(255), 1);
+        assert_eq!(gf_mul(0x80, 2), 0x1d);
+        for a in 1..=255u8 {
+            assert_eq!(gf_mul(a, gf_inv(a)), 1, "{a:#x}");
         }
     }
 
@@ -1213,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn raid5_with_two_missing_and_raid6_with_two_missing_are_refused() {
+    fn raid5_with_two_missing_and_raid6_with_three_missing_are_refused() {
         let per = (MEMBER as u64 - DATA_OFFSET) / CHUNK * CHUNK;
         let members = build(5, 2, 4, &pattern((per * 3) as usize));
         let two: Vec<Mem> = members.into_iter().take(2).map(Mem).collect();
@@ -1222,10 +1354,10 @@ mod tests {
             Err(MdError::TooFewMembers { .. })
         ));
         let members = build(6, 2, 5, &pattern((per * 3) as usize));
-        let three: Vec<Mem> = members.into_iter().take(3).map(Mem).collect();
+        let two: Vec<Mem> = members.into_iter().take(2).map(Mem).collect();
         assert!(matches!(
-            MdArray::assemble(three),
-            Err(MdError::Unsupported(_))
+            MdArray::assemble(two),
+            Err(MdError::TooFewMembers { .. })
         ));
     }
 
