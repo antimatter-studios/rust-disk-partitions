@@ -6,6 +6,21 @@ never does.
 
 ## [Unreleased]
 
+### Added
+
+- **Linux software RAID members can be read as the array they belong to.**
+  `md::read_superblock` decodes 0.90, 1.0, 1.1 and 1.2 superblocks, and
+  `md::MdArray::assemble` turns the members into one `BlockRead` over the
+  array: RAID0, RAID1, RAID4, RAID5 in all six layouts and RAID6
+  left-symmetric, with one redundant member missing recovered from the
+  mirror or from P. RAID10, linear, multi-zone RAID0, two missing RAID6
+  members and mid-reshape arrays are refused by name (#151).
+- **The md reader is checked against the kernel.** `scripts/make-md-oracle.sh`
+  has `mdadm` build 16 arrays on loop devices, and `tests/oracle_md.rs`
+  requires every byte of each, whole and with each redundant member left
+  out, to match the kernel's `/dev/mdX`, and every 1.x superblock to agree
+  with `mdadm --examine`.
+
 ### Fixed
 
 - **A cold cache no longer fails a test tier on its line count.** The
