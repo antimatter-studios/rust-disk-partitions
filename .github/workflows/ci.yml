@@ -134,6 +134,13 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
+      - name: build --release
+        # OUTSIDE THE BUDGET, so a cold cache's `Downloaded` and `Compiling`
+        # lines land here and not in the tier below (#155). `--no-run` builds
+        # exactly what the budgeted run executes, so that run compiles
+        # nothing. `every_budgeted_cargo_test_is_built_before_its_budget_starts`
+        # in tests/ci_profile.rs keeps this step here.
+        run: cargo test --locked --release --all-targets --no-run
       - name: test --release
         shell: bash
         # Through the same wrapper, under the same budget, with its own
@@ -196,6 +203,9 @@ jobs:
           sudo apt-get install -y gdisk util-linux
           sgdisk --version
           sfdisk --version
+      - name: build the oracle tests
+        # Outside the budget, for the same reason as `build --release` (#155).
+        run: cargo test --locked --features oracle --test oracle_tools --no-run
       - name: test the oracle
         shell: bash
         # A VERDICT, NOT A TRANSCRIPT -- this job was already the one that

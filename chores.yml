@@ -146,12 +146,14 @@ tasks:
   # ever goes up.
   #
   #   tier     measured lines/bytes   budget         floor  measured tests
-  #   debug    348 / 21,640           440 / 28,000     258  293
-  #   release  351 / 21,849           440 / 28,000     258  293
+  #   debug    397 / 24,098           520 / 30,000     258  311
+  #   release  399 / 24,217           520 / 30,000     258  311
   #   oracle    14 /    667            40 /  3,000       9  9
   #
-  # EVERY ROW WAS MEASURED IN CI, from the retained tier-logs-* artifacts of
-  # run 36411947701 on the branch for #127 -- the debug row from the largest
+  # EVERY ROW WAS MEASURED IN CI. The debug and release rows are from the
+  # tier-logs-* artifacts of main run 37516034159, warm, after the rename to
+  # rust-disk-partitions lengthened every path (#155); the oracle row and the
+  # notes below are from run 36411947701 on the branch for #127 -- the debug row from the largest
   # of the three matrix legs (windows-latest; ubuntu and macOS were 21,604
   # bytes). CI is the place to measure: its absolute paths are longer than a
   # host's and a cold cargo cache prints a `Compiling` line per dependency
@@ -174,12 +176,16 @@ tasks:
   # `test:scripts` has no budget and no floor on purpose: it prints one PASS
   # line per check rather than cargo's `test result:` lines, so the floor
   # would read zero for a tier that ran everything.
-  # BUDGET: 491 lines, 28333 bytes measured in release once the crate moved
-  # to rust-fs-core 0.3.0 (run 37439858374); both profiles print the same
-  # shape, so both carry 520 lines and 30000 bytes.
+  # BUDGET: 520 lines and 30000 bytes for both profiles, about 25% over the
+  # warm measurement on main run 37516034159 (release 399 lines / 24,217
+  # bytes, debug 397 / 24,098 on windows-latest, the largest leg). It was
+  # first set from a cold release run that compiled inside the tier (491 /
+  # 28,333, run 37439858374); each job now builds before its tier, so the
+  # budget counts tests only (#155).
   test:
     desc: The suite, in debug, where overflow checks are on
     cmds:
+      - 'cargo build --locked --all-targets'
       - '../rust-fs-core/scripts/tier.sh "test (debug)" debug 520 30000 -- cargo test --locked --all-targets'
       - 'bash ../rust-fs-core/scripts/test-floor.sh debug 258'
 
@@ -189,6 +195,7 @@ tasks:
     # wrap silently in release, and this crate's inputs are numbers off a
     # disk. tests/ci_profile.rs holds the debug run to being a debug run.
     cmds:
+      - 'cargo test --locked --release --all-targets --no-run'
       - '../rust-fs-core/scripts/tier.sh "test (release)" release 520 30000 -- cargo test --locked --release --all-targets'
       - 'bash ../rust-fs-core/scripts/test-floor.sh release 258'
 
@@ -200,6 +207,7 @@ tasks:
     # `--nocapture` is what lets each test's comparison count out of the
     # harness and into the log, where the second floor in ci.yml reads it.
     cmds:
+      - 'cargo test --locked --features oracle --test oracle_tools --no-run'
       - '../rust-fs-core/scripts/tier.sh "test (oracle)" oracle 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 9'
 
