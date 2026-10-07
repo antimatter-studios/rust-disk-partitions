@@ -25,7 +25,7 @@ out="${1:?usage: make-md-oracle.sh OUT}"
 command -v mdadm >/dev/null || { echo "mdadm not found (apt-get install mdadm); this script does not skip" >&2; exit 1; }
 # Named here so a missing personality says which, rather than surfacing
 # as a create error further down.
-modprobe -a raid0 raid1 raid456 || { echo "cannot load raid0, raid1 or raid456; this script does not skip" >&2; exit 1; }
+modprobe -a raid0 raid1 raid456 raid10 || { echo "cannot load raid0, raid1, raid456 or raid10; this script does not skip" >&2; exit 1; }
 
 rm -rf "$out"
 mkdir -p "$out"
@@ -41,14 +41,19 @@ cleanup() {
 trap cleanup EXIT
 
 # make_case NAME LEVEL MEMBERS METADATA [mdadm options...]
+#
+# Every member is MEMBER_MIB unless SIZES lists one size in MiB per
+# member, in slot order.
 make_case() {
     local name="$1" level="$2" n="$3" meta="$4"
     shift 4
     local dir="$out/$name"
+    local sizes
+    read -r -a sizes <<<"${SIZES:-}"
     mkdir -p "$dir"
     loops=()
     for ((s = 0; s < n; s++)); do
-        truncate -s "${MEMBER_MIB}M" "$dir/member-$s.img"
+        truncate -s "${sizes[$s]:-$MEMBER_MIB}M" "$dir/member-$s.img"
         loops+=("$(losetup --find --show "$dir/member-$s.img")")
     done
     md=/dev/md$next_md
@@ -97,3 +102,11 @@ make_case raid5-pl-v1.2 5 3 1.2 --chunk=64 --layout=parity-last
 make_case raid5-ls-v1.0 5 3 1.0 --chunk=64
 make_case raid5-ls-v0.90 5 3 0.90 --chunk=64
 make_case raid6-ls-v1.2 6 5 1.2 --chunk=64
+make_case raid10-n2-v1.2 10 4 1.2 --chunk=64 --layout=n2
+make_case raid10-n2-odd-v1.2 10 3 1.2 --chunk=64 --layout=n2
+make_case raid10-n2-v0.90 10 4 0.90 --chunk=64 --layout=n2
+make_case raid10-f2-v1.2 10 4 1.2 --chunk=64 --layout=f2
+make_case raid10-f2-odd-v1.2 10 3 1.2 --chunk=32 --layout=f2
+make_case raid10-o2-v1.2 10 3 1.2 --chunk=64 --layout=o2
+make_case raid10-n3-v1.2 10 4 1.2 --chunk=64 --layout=n3
+SIZES="40 16 24" make_case raid0-zones-v1.2 0 3 1.2 --chunk=64 --layout=alternate

@@ -27,12 +27,13 @@ It does **not** mount anything, decode files, or write — it's a probe.
 - [x] Linux software RAID (`md`): superblocks 0.90, 1.0, 1.1 and 1.2
       (`md::read_superblock`), and `md::MdArray`, which assembles the
       members into one `BlockRead` reading the bytes the kernel's `/dev/mdX`
-      would — RAID0 (equal members), RAID1, RAID4, RAID5 (all six layouts)
-      and RAID6 (left-symmetric), each with one redundant member missing.
-      Checked byte for byte against arrays the kernel built
-      (`tests/oracle_md.rs`). Not yet: RAID10, linear, multi-zone RAID0,
-      a RAID6 missing two members, and arrays mid-reshape, all refused by
-      name
+      would — RAID0 (one zone, or several in the `alternate` layout),
+      RAID1, RAID4, RAID5 (all six layouts), RAID6 (left-symmetric) and
+      RAID10 (near, far and offset copies), each with one redundant member
+      missing. Checked byte for byte against arrays the kernel built
+      (`tests/oracle_md.rs`). Not yet: linear, multi-zone RAID0 in the
+      `original` layout, a RAID6 missing two members, and arrays
+      mid-reshape, all refused by name
 - [ ] LVM / LUKS detection
 - [ ] Logical-partition (extended MBR) chain walking. Until it exists,
       `mbr::parse` and `probe` leave the extended container itself out of

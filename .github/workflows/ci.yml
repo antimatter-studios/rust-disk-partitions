@@ -269,7 +269,7 @@ jobs:
       - name: test the md oracle
         shell: bash
         # Two floors: both tests in the target must run, and the target
-        # itself asserts every one of the 15 arrays was compared.
+        # itself asserts every one of the 23 arrays was compared.
         run: |
           bash ../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture
           bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2

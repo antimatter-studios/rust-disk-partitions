@@ -72,8 +72,8 @@ fn cases() -> Vec<Case> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     assert!(
-        out.len() >= 15,
-        "only {} md oracle cases found; the script builds 15",
+        out.len() >= 23,
+        "only {} md oracle cases found; the script builds 23",
         out.len()
     );
     out
@@ -116,7 +116,9 @@ fn every_array_reads_the_bytes_the_kernel_wrote() {
         reversed.reverse();
         compare(&case, &reversed, &expect);
         compared += expect.len() as u64;
-        if case.level != 0 {
+        // Every level with redundancy can lose any one member: RAID10's
+        // copies of a chunk are always on different members.
+        if case.level > 0 {
             for drop in 0..case.members {
                 let some: Vec<usize> = all.iter().copied().filter(|&s| s != drop).collect();
                 compare(&case, &some, &expect);

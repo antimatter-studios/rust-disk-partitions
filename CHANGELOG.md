@@ -20,6 +20,13 @@ never does.
   requires every byte of each, whole and with each redundant member left
   out, to match the kernel's `/dev/mdX`, and every 1.x superblock to agree
   with `mdadm --examine`.
+- **RAID10 and multi-zone RAID0 arrays are read.** `md::MdArray` places
+  RAID10 chunks in near, far and offset layouts, reading any copy that is
+  present and naming the slots when every copy of some chunk is missing,
+  and stripes a RAID0 over members of different sizes zone by zone in the
+  `alternate` layout. The `original` multi-zone layout, or none recorded,
+  is refused. Eight more `mdadm` arrays check both against the kernel
+  (#151).
 
 ### Fixed
 

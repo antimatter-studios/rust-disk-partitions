@@ -29,17 +29,19 @@
 //!
 //! | level | layouts | members that may be missing |
 //! |---|---|---|
-//! | RAID0 | equal-sized members (one zone) | none |
+//! | RAID0 | one zone, or several over members of different sizes (the `alternate` layout) | none |
 //! | RAID1 | — | all but one |
 //! | RAID4 | parity on the last member | one |
 //! | RAID5 | left/right, symmetric/asymmetric, parity-first, parity-last | one |
 //! | RAID6 | left-symmetric (the `mdadm` default) | one |
+//! | RAID10 | near, far and offset copies | any, while one copy of every chunk is left |
 //!
-//! Anything else is refused by name with [`MdError::Unsupported`]: RAID10,
-//! linear arrays, RAID0 over members of different sizes, an array in the
-//! middle of a reshape, and a RAID6 with two members missing (which needs
-//! the Q syndrome rather than P). Refusing is the point: a layout read with
-//! the wrong geometry returns plausible bytes from the wrong places.
+//! Anything else is refused by name with [`MdError::Unsupported`]: linear
+//! arrays, multi-zone RAID0 in the `original` layout or with no layout
+//! recorded, an array in the middle of a reshape, and a RAID6 with two
+//! members missing (which needs the Q syndrome rather than P). Refusing is
+//! the point: a layout read with the wrong geometry returns plausible bytes
+//! from the wrong places.
 //!
 //! The array is read-only. Writing would have to keep parity, bitmaps and
 //! event counts consistent with what the kernel expects, and nothing here
@@ -76,6 +78,17 @@ const LEVEL_RAID1: i32 = 1;
 const LEVEL_RAID4: i32 = 4;
 const LEVEL_RAID5: i32 = 5;
 const LEVEL_RAID6: i32 = 6;
+const LEVEL_RAID10: i32 = 10;
+
+/// Multi-zone RAID0 layouts, by the number the superblock stores. A
+/// single-zone RAID0 reads the same whatever it says.
+const RAID0_LAYOUT_ORIGINAL: u32 = 1;
+const RAID0_LAYOUT_ALTERNATE: u32 = 2;
+
+/// RAID10 layout word: near copies in bits 0-7, far copies in 8-15, and
+/// this bit when the far copies are offset (one stripe apart) rather than
+/// far (one section of the member apart).
+const RAID10_OFFSET: u32 = 1 << 16;
 
 /// RAID5/6 parity layouts, by the number the superblock stores.
 const LAYOUT_LEFT_ASYMMETRIC: u32 = 0;
@@ -177,6 +190,9 @@ pub enum MdError {
         present: u32,
         needed: u32,
     },
+    /// Every copy of some RAID10 chunk is on a missing member. `slots`
+    /// are the slots one such chunk is kept on.
+    NoCopyLeft { slots: Vec<u32> },
     /// A level, layout or state this module does not assemble.
     Unsupported(String),
     /// No members were given.
@@ -209,6 +225,9 @@ impl fmt::Display for MdError {
                 f,
                 "RAID{level} needs {needed} usable members, {present} present"
             ),
+            MdError::NoCopyLeft { slots } => {
+                write!(f, "every copy of some data is on missing slots {slots:?}")
+            }
             MdError::Unsupported(s) => write!(f, "unsupported: {s}"),
             MdError::Empty => write!(f, "no members given"),
         }
@@ -510,6 +529,81 @@ fn parity_map(
 struct Member<R> {
     dev: R,
     data_offset: u64,
+    data_size: u64,
+}
+
+/// A run of a RAID0 array striped over the members that reach that far.
+/// Members of equal size make one zone; members of different sizes make
+/// one per distinct size, each over fewer members than the last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Zone {
+    /// Array byte where the zone starts.
+    start: u64,
+    /// Array bytes in the zone.
+    len: u64,
+    /// Byte, from each member's data offset, where the zone starts.
+    dev_start: u64,
+    /// The slots striped over, in slot order.
+    slots: Vec<usize>,
+}
+
+/// The zones of a RAID0 over members whose usable sizes (already a
+/// multiple of the chunk) are `sizes`, indexed by slot.
+fn raid0_zones(sizes: &[u64]) -> Vec<Zone> {
+    let mut ends: Vec<u64> = sizes.iter().copied().filter(|&s| s > 0).collect();
+    ends.sort_unstable();
+    ends.dedup();
+    let mut zones = Vec::new();
+    let (mut start, mut prev) = (0u64, 0u64);
+    for end in ends {
+        let slots: Vec<usize> = (0..sizes.len()).filter(|&s| sizes[s] >= end).collect();
+        let len = (end - prev) * slots.len() as u64;
+        zones.push(Zone {
+            start,
+            len,
+            dev_start: prev,
+            slots,
+        });
+        start += len;
+        prev = end;
+    }
+    zones
+}
+
+/// A RAID10 layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Raid10 {
+    /// Copies placed side by side on consecutive members.
+    near: u64,
+    /// Copies placed further down the members.
+    far: u64,
+    /// Far copies are one chunk row apart (`offset`) rather than one
+    /// section of the member apart (`far`).
+    offset: bool,
+    /// Chunk rows in one far section.
+    stride: u64,
+}
+
+impl Raid10 {
+    /// Every place array chunk `c` is kept, primary copy first, as
+    /// (slot, chunk row on that member), over `d` members.
+    fn copies(&self, d: u64, c: u64) -> Vec<(usize, u64)> {
+        let mut out = Vec::with_capacity((self.near * self.far) as usize);
+        for i in 0..self.near {
+            let at = c * self.near + i;
+            let (dev, row) = (at % d, at / d);
+            for k in 0..self.far {
+                let slot = (dev + k * self.near) % d;
+                let row = if self.offset {
+                    row * self.far + k
+                } else {
+                    row + k * self.stride
+                };
+                out.push((slot as usize, row));
+            }
+        }
+        out
+    }
 }
 
 /// An assembled `md` array, read through its members.
@@ -520,6 +614,10 @@ pub struct MdArray<R: BlockRead> {
     layout: u32,
     chunk: u64,
     size: u64,
+    /// RAID0 only.
+    zones: Vec<Zone>,
+    /// RAID10 only.
+    raid10: Option<Raid10>,
     superblock: MdSuperblock,
 }
 
@@ -574,7 +672,6 @@ impl<R: BlockRead> MdArray<R> {
         }
         let level = lead.level;
         let mut slots: Vec<Option<Member<R>>> = (0..n).map(|_| None).collect();
-        let mut sizes = Vec::new();
         for (_, dev, sb) in found {
             let MdRole::Active(slot) = sb.role else {
                 continue;
@@ -589,10 +686,10 @@ impl<R: BlockRead> MdArray<R> {
             if entry.is_some() {
                 return Err(MdError::DuplicateRole { slot });
             }
-            sizes.push(sb.data_size);
             *entry = Some(Member {
                 dev,
                 data_offset: sb.data_offset,
+                data_size: sb.data_size,
             });
         }
         let present = slots.iter().filter(|s| s.is_some()).count() as u32;
@@ -617,6 +714,8 @@ impl<R: BlockRead> MdArray<R> {
             }
         };
         let per_member = lead.component_size;
+        let mut zones = Vec::new();
+        let mut raid10 = None;
         let size = match level {
             LEVEL_RAID1 => {
                 need(1)?;
@@ -625,13 +724,64 @@ impl<R: BlockRead> MdArray<R> {
             LEVEL_RAID0 => {
                 need(n)?;
                 needs_chunk()?;
-                if sizes.iter().any(|&s| s / chunk != sizes[0] / chunk) {
-                    return Err(MdError::Unsupported(
-                        "RAID0 over members of different sizes (more than one zone)".into(),
+                let sizes: Vec<u64> = slots
+                    .iter()
+                    .flatten()
+                    .map(|m| m.data_size / chunk * chunk)
+                    .collect();
+                zones = raid0_zones(&sizes);
+                // Which member a chunk of a later zone is on has been
+                // computed two ways over the kernel's history, and the
+                // superblock records which. Only one is read here; the
+                // other, or neither recorded, is refused rather than
+                // guessed.
+                if zones.len() > 1 && lead.layout != RAID0_LAYOUT_ALTERNATE {
+                    return Err(MdError::Unsupported(match lead.layout {
+                        RAID0_LAYOUT_ORIGINAL => {
+                            "multi-zone RAID0 in the original layout".to_string()
+                        }
+                        l => format!("multi-zone RAID0 with layout {l}"),
+                    }));
+                }
+                zones.iter().map(|z| z.len).sum()
+            }
+            LEVEL_RAID10 => {
+                needs_chunk()?;
+                if lead.layout & !(RAID10_OFFSET | 0xffff) != 0 {
+                    return Err(MdError::Unsupported(format!(
+                        "RAID10 layout {:#x}",
+                        lead.layout
+                    )));
+                }
+                let near = u64::from(lead.layout & 0xff);
+                let far = u64::from((lead.layout >> 8) & 0xff);
+                let d = u64::from(n);
+                if near == 0 || far == 0 || near * far > d {
+                    return Err(corrupt(
+                        0,
+                        format!("RAID10 layout {:#x} over {n} members", lead.layout),
                     ));
                 }
-                (sizes[0] / chunk)
-                    .checked_mul(chunk * u64::from(n))
+                let dev_chunks = per_member / chunk;
+                let geo = Raid10 {
+                    near,
+                    far,
+                    offset: lead.layout & RAID10_OFFSET != 0,
+                    stride: dev_chunks / far,
+                };
+                // The copies of chunk c fall on the same slots as those of
+                // chunk c + d, so d chunks show every combination.
+                for c in 0..d {
+                    let copies = geo.copies(d, c);
+                    if copies.iter().all(|&(s, _)| slots[s].is_none()) {
+                        return Err(MdError::NoCopyLeft {
+                            slots: copies.iter().map(|&(s, _)| s as u32).collect(),
+                        });
+                    }
+                }
+                raid10 = Some(geo);
+                (dev_chunks / far * d / near)
+                    .checked_mul(chunk)
                     .ok_or_else(|| corrupt(0, "array size overflows"))?
             }
             LEVEL_RAID4 | LEVEL_RAID5 | LEVEL_RAID6 => {
@@ -671,10 +821,11 @@ impl<R: BlockRead> MdArray<R> {
             }
         };
         for m in slots.iter().flatten() {
-            let span = if level == LEVEL_RAID1 {
-                size
-            } else {
-                per_member
+            let span = match level {
+                LEVEL_RAID1 => size,
+                // Zones end within each member's own data size.
+                LEVEL_RAID0 => 0,
+                _ => per_member,
             };
             match m.data_offset.checked_add(span) {
                 Some(end) if end <= m.dev.size_bytes() => {}
@@ -687,6 +838,8 @@ impl<R: BlockRead> MdArray<R> {
             layout: lead.layout,
             chunk,
             size,
+            zones,
+            raid10,
             superblock: lead,
         })
     }
@@ -727,12 +880,37 @@ impl<R: BlockRead> MdArray<R> {
         Err(last.unwrap_or_else(|| fs_core::Error::Custom("no RAID1 member present".into())))
     }
 
+    /// Read RAID0 bytes from `pos` up to the end of its chunk or zone,
+    /// whichever is nearer; returns how many were read.
+    fn read_zoned(&self, pos: u64, buf: &mut [u8]) -> fs_core::Result<usize> {
+        let z = self
+            .zones
+            .iter()
+            .find(|z| pos >= z.start && pos < z.start + z.len)
+            .expect("zones cover the array");
+        let within = pos - z.start;
+        let k = z.slots.len() as u64;
+        let (c, inner) = (within / self.chunk, within % self.chunk);
+        let take = ((self.chunk - inner) as usize).min(buf.len());
+        let off = z.dev_start + (c / k) * self.chunk + inner;
+        self.read_member(z.slots[(c % k) as usize], off, &mut buf[..take])?;
+        Ok(take)
+    }
+
     fn read_chunk(&self, k: u64, within: u64, buf: &mut [u8]) -> fs_core::Result<()> {
         let n = self.slots.len() as u64;
-        if self.level == LEVEL_RAID0 {
-            let off = (k / n) * self.chunk + within;
-            self.read_member((k % n) as usize, off, buf)?;
-            return Ok(());
+        if let Some(geo) = &self.raid10 {
+            let mut last = None;
+            for (slot, row) in geo.copies(n, k) {
+                match self.read_member(slot, row * self.chunk + within, buf) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) => last = Some(e),
+                }
+            }
+            return Err(last.unwrap_or_else(|| {
+                fs_core::Error::Custom(format!("md: no copy of chunk {k} is present"))
+            }));
         }
         let parity = if self.level == LEVEL_RAID6 { 2 } else { 1 };
         let data = n - parity;
@@ -785,6 +963,12 @@ impl<R: BlockRead> BlockRead for MdArray<R> {
             return self.read_raid1(offset, buf);
         }
         let mut done = 0usize;
+        if self.level == LEVEL_RAID0 {
+            while done < buf.len() {
+                done += self.read_zoned(offset + done as u64, &mut buf[done..])?;
+            }
+            return Ok(());
+        }
         while done < buf.len() {
             let pos = offset + done as u64;
             let k = pos / self.chunk;
@@ -833,6 +1017,25 @@ mod tests {
 
     /// A 1.2 superblock for slot `slot` of an `n`-member array.
     fn sb_v12(level: i32, layout: u32, n: u32, slot: u16, events: u64) -> Vec<u8> {
+        sb_v12_sized(
+            level,
+            layout,
+            n,
+            slot,
+            events,
+            (MEMBER as u64 - DATA_OFFSET) / SECTOR,
+        )
+    }
+
+    /// [`sb_v12`] for a member whose data area is `data_size` sectors.
+    fn sb_v12_sized(
+        level: i32,
+        layout: u32,
+        n: u32,
+        slot: u16,
+        events: u64,
+        data_size: u64,
+    ) -> Vec<u8> {
         let mut b = vec![0u8; 4096];
         let put32 =
             |b: &mut [u8], at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -844,7 +1047,6 @@ mod tests {
         b[32..38].copy_from_slice(b"host:0");
         put32(&mut b, 72, level as u32);
         put32(&mut b, 76, layout);
-        let data_size = (MEMBER as u64 - DATA_OFFSET) / SECTOR;
         put64(&mut b, 80, data_size / (CHUNK / SECTOR) * (CHUNK / SECTOR));
         put32(&mut b, 88, (CHUNK / SECTOR) as u32);
         put32(&mut b, 92, n);
@@ -1044,5 +1246,167 @@ mod tests {
         let mut b = [0u8; 2];
         assert!(a.read_at(a.size_bytes() - 1, &mut b).is_err());
         assert!(a.read_at(u64::MAX, &mut b).is_err());
+    }
+
+    #[test]
+    fn raid10_copies_land_where_the_documented_layouts_put_them() {
+        // near=2 over 3 members: copies side by side, wrapping into the
+        // next row.
+        let near = Raid10 {
+            near: 2,
+            far: 1,
+            offset: false,
+            stride: 0,
+        };
+        assert_eq!(near.copies(3, 0), [(0, 0), (1, 0)]);
+        assert_eq!(near.copies(3, 1), [(2, 0), (0, 1)]);
+        assert_eq!(near.copies(3, 2), [(1, 1), (2, 1)]);
+        // far=2 over 4 members: a RAID0 over the first half of each
+        // member, then the same again in the second half, one member on.
+        let far = Raid10 {
+            near: 1,
+            far: 2,
+            offset: false,
+            stride: 50,
+        };
+        assert_eq!(far.copies(4, 0), [(0, 0), (1, 50)]);
+        assert_eq!(far.copies(4, 3), [(3, 0), (0, 50)]);
+        assert_eq!(far.copies(4, 4), [(0, 1), (1, 51)]);
+        // offset=2 over 3 members: each row repeated in the next, one
+        // member on.
+        let offset = Raid10 {
+            near: 1,
+            far: 2,
+            offset: true,
+            stride: 0,
+        };
+        assert_eq!(offset.copies(3, 0), [(0, 0), (1, 1)]);
+        assert_eq!(offset.copies(3, 2), [(2, 0), (0, 1)]);
+        assert_eq!(offset.copies(3, 3), [(0, 2), (1, 3)]);
+    }
+
+    /// Members of an `n`-member RAID10 in `layout`, laid out by
+    /// `Raid10::copies`, and the logical array they hold.
+    fn build_raid10(layout: u32, n: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
+        let near = u64::from(layout & 0xff);
+        let far = u64::from((layout >> 8) & 0xff);
+        let dev_chunks = (MEMBER as u64 - DATA_OFFSET) / CHUNK;
+        let geo = Raid10 {
+            near,
+            far,
+            offset: layout & RAID10_OFFSET != 0,
+            stride: dev_chunks / far,
+        };
+        let chunks = dev_chunks / far * u64::from(n) / near;
+        let logical = pattern((chunks * CHUNK) as usize);
+        let mut members: Vec<Vec<u8>> = (0..n)
+            .map(|s| {
+                let mut m = vec![0u8; MEMBER];
+                m[4096..8192].copy_from_slice(&sb_v12(10, layout, n, s as u16, 7));
+                m
+            })
+            .collect();
+        let c = CHUNK as usize;
+        for k in 0..chunks {
+            let src = &logical[k as usize * c..][..c];
+            for (slot, row) in geo.copies(u64::from(n), k) {
+                let o = (DATA_OFFSET + row * CHUNK) as usize;
+                members[slot][o..o + c].copy_from_slice(src);
+            }
+        }
+        (members, logical)
+    }
+
+    #[test]
+    fn raid10_reads_back_with_any_one_member_missing_and_refuses_a_lost_pair() {
+        for (layout, n) in [(0x102, 4), (0x102, 3), (0x201, 4), (0x1_0201, 3)] {
+            let (members, logical) = build_raid10(layout, n);
+            for drop in [None, Some(0), Some(1), Some(n as usize - 1)] {
+                let devs: Vec<Mem> = members
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| Some(*i) != drop)
+                    .map(|(_, m)| Mem(m.clone()))
+                    .collect();
+                let a = MdArray::assemble(devs).expect("assembles");
+                assert_eq!(a.size_bytes(), logical.len() as u64);
+                let mut got = vec![0u8; logical.len()];
+                a.read_at(0, &mut got).unwrap();
+                assert!(got == logical, "layout {layout:#x} n {n} drop {drop:?}");
+                let mut part = vec![0u8; 2 * CHUNK as usize + 9];
+                a.read_at(CHUNK - 3, &mut part).unwrap();
+                assert_eq!(part[..], logical[(CHUNK - 3) as usize..][..part.len()]);
+            }
+        }
+        // near=2 over 4: slots 0 and 1 hold the only copies of chunk 0.
+        let (members, _) = build_raid10(0x102, 4);
+        let devs: Vec<Mem> = members.into_iter().skip(2).map(Mem).collect();
+        assert!(matches!(
+            MdArray::assemble(devs),
+            Err(MdError::NoCopyLeft { .. })
+        ));
+    }
+
+    #[test]
+    fn raid0_zones_follow_the_member_sizes() {
+        let c = CHUNK;
+        let z = raid0_zones(&[3 * c, c, 2 * c]);
+        assert_eq!(z.len(), 3);
+        assert_eq!((z[0].start, z[0].len, z[0].dev_start), (0, 3 * c, 0));
+        assert_eq!(z[0].slots, [0, 1, 2]);
+        assert_eq!((z[1].start, z[1].len, z[1].dev_start), (3 * c, 2 * c, c));
+        assert_eq!(z[1].slots, [0, 2]);
+        assert_eq!((z[2].start, z[2].len, z[2].dev_start), (5 * c, c, 2 * c));
+        assert_eq!(z[2].slots, [0]);
+        assert_eq!(raid0_zones(&[2 * c, 2 * c]).len(), 1);
+    }
+
+    #[test]
+    fn multi_zone_raid0_reads_back_in_the_alternate_layout_only() {
+        // Members of 40, 16 and 24 chunks: zones of 3x16, 2x8 and 1x16.
+        let chunks = [40u64, 16, 24];
+        let build = |layout: u32| -> (Vec<Mem>, Vec<u8>) {
+            let sizes: Vec<u64> = chunks.iter().map(|&k| k * CHUNK).collect();
+            let zones = raid0_zones(&sizes);
+            let total: u64 = zones.iter().map(|z| z.len).sum();
+            let logical = pattern(total as usize);
+            let mut members: Vec<Vec<u8>> = (0..3)
+                .map(|s| {
+                    let mut m = vec![0u8; MEMBER];
+                    let sb = sb_v12_sized(0, layout, 3, s as u16, 1, sizes[s] / SECTOR);
+                    m[4096..8192].copy_from_slice(&sb);
+                    m
+                })
+                .collect();
+            // Written zone by zone: chunk i of a zone goes to the zone's
+            // (i mod k)-th member, row i / k of the zone.
+            let c = CHUNK as usize;
+            for z in &zones {
+                let k = z.slots.len();
+                for i in 0..(z.len / CHUNK) as usize {
+                    let src = &logical[z.start as usize + i * c..][..c];
+                    let o = DATA_OFFSET as usize + z.dev_start as usize + (i / k) * c;
+                    members[z.slots[i % k]][o..o + c].copy_from_slice(src);
+                }
+            }
+            (members.into_iter().map(Mem).collect(), logical)
+        };
+        let (devs, logical) = build(RAID0_LAYOUT_ALTERNATE);
+        let a = MdArray::assemble(devs).expect("assembles");
+        assert_eq!(a.size_bytes(), 80 * CHUNK);
+        let mut got = vec![0u8; logical.len()];
+        a.read_at(0, &mut got).unwrap();
+        assert!(got == logical);
+        // Across the boundary between the first and second zones.
+        let mut part = vec![0u8; 3 * CHUNK as usize];
+        a.read_at(47 * CHUNK + 5, &mut part).unwrap();
+        assert_eq!(part[..], logical[(47 * CHUNK + 5) as usize..][..part.len()]);
+        for layout in [RAID0_LAYOUT_ORIGINAL, 0] {
+            let (devs, _) = build(layout);
+            assert!(matches!(
+                MdArray::assemble(devs),
+                Err(MdError::Unsupported(_))
+            ));
+        }
     }
 }
