@@ -211,6 +211,15 @@ tasks:
       - '../rust-fs-core/scripts/tier.sh "test (oracle)" oracle 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_tools -- --nocapture'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 9'
 
+  test:oracle-md:
+    desc: md arrays assembled by this crate against the kernel's /dev/mdX
+    # Needs `sudo scripts/make-md-oracle.sh tmp/md-oracle` first (mdadm,
+    # loop devices, the md driver); the test fails naming it otherwise.
+    cmds:
+      - 'cargo test --locked --features oracle --test oracle_md --no-run'
+      - '../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2'
+
   clean:
     desc: Remove this crate's cargo output
     cmds: ['cargo clean']

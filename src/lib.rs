@@ -107,6 +107,7 @@ pub mod error;
 pub mod gpt;
 pub mod gpt_write;
 pub mod mbr;
+pub mod md;
 pub mod mutation;
 pub mod probe;
 pub mod sniff;
