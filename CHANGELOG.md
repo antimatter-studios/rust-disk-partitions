@@ -32,6 +32,17 @@ never does.
   describes, and a row that has lost two data chunks, or one with P, is
   rebuilt from it. The kernel's RAID6 array is read with every pair of
   members left out (#151).
+- **LVM2 logical volumes can be read as block devices.** `lvm::read_pv_label`
+  reads a physical volume's label, `lvm::read_volume_group` the newest
+  metadata among the given PVs (including text that wraps round its
+  ring), and `lvm::LogicalVolume::open` maps a linear or striped volume
+  onto them as one `BlockRead`. Other segment types and missing PVs are
+  refused by name (#151).
+- **The LVM reader is checked against the kernel.** `scripts/make-lvm-oracle.sh`
+  has `lvm2` build a two-segment linear volume, a three-way striped one,
+  and a Synology-shaped stack of GPT, md RAID1 and RAID5, and LVM, and
+  `tests/oracle_lvm.rs` requires every byte read through this crate to
+  match the kernel's devices, with each RAID member left out in turn.
 
 ### Fixed
 

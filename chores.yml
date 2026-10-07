@@ -220,6 +220,16 @@ tasks:
       - '../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2'
 
+  test:oracle-lvm:
+    desc: LVM2 logical volumes read by this crate against the kernel's device-mapper
+    # Needs `sudo scripts/make-lvm-oracle.sh tmp/lvm-oracle` first (lvm2,
+    # mdadm, sfdisk, loop devices, md and device-mapper); the test fails
+    # naming it otherwise.
+    cmds:
+      - 'cargo test --locked --features oracle --test oracle_lvm --no-run'
+      - '../rust-fs-core/scripts/tier.sh "test (oracle lvm)" oracle-lvm 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_lvm -- --nocapture'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh oracle-lvm 3'
+
   clean:
     desc: Remove this crate's cargo output
     cmds: ['cargo clean']

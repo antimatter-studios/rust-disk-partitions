@@ -273,6 +273,28 @@ jobs:
         run: |
           bash ../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture
           bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2
+      # THE KERNEL AS THE LVM ORACLE. scripts/make-lvm-oracle.sh has lvm2
+      # build a linear volume in two segments that are not adjacent on its
+      # PV, a volume striped over three PVs, and a Synology-shaped set of
+      # disks: GPT partitions, md RAID1 and RAID5 across them, and LVM on
+      # the RAID5. It writes random data through the kernel's devices and
+      # dumps every byte. tests/oracle_lvm.rs reads the detached images
+      # through this crate, down through GPT and md for the stacked case,
+      # and requires the kernel's bytes back, with each RAID member left
+      # out in turn. It fails, never skips, when the volumes are missing.
+      - name: build LVM volumes with the kernel
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lvm2
+          sudo bash scripts/make-lvm-oracle.sh tmp/lvm-oracle
+      - name: build the LVM oracle tests
+        # Outside the budget, in a step of its own (#155).
+        run: cargo test --locked --features oracle --test oracle_lvm --no-run
+      - name: test the LVM oracle
+        shell: bash
+        # Floor: all three tests in the target must run.
+        run: |
+          bash ../rust-fs-core/scripts/tier.sh "test (oracle lvm)" oracle-lvm 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_lvm -- --nocapture
+          bash ../rust-fs-core/scripts/test-floor.sh oracle-lvm 3
       - name: keep the tier logs
         if: always()
         uses: actions/upload-artifact@v4
