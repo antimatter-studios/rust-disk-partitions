@@ -85,6 +85,13 @@ required-features = ["oracle"]
 name = "oracle_md"
 required-features = ["oracle"]
 
+# LVM2 logical volumes against the kernel's device-mapper, one of them on
+# md RAID inside GPT partitions. Built by scripts/make-lvm-oracle.sh under
+# sudo first; the target fails rather than skips when they are absent.
+[[test]]
+name = "oracle_lvm"
+required-features = ["oracle"]
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -34,7 +34,14 @@ It does **not** mount anything, decode files, or write — it's a probe.
       byte against arrays the kernel built (`tests/oracle_md.rs`). Not
       yet: linear, multi-zone RAID0 in the `original` layout, and arrays
       mid-reshape, all refused by name
-- [ ] LVM / LUKS detection
+- [x] LVM2 (`lvm`): physical-volume labels (`lvm::read_pv_label`), the
+      newest volume-group metadata (`lvm::read_volume_group`), and
+      `lvm::LogicalVolume`, which reads a linear or striped logical volume
+      as one `BlockRead` — including one on an `md` array, the way a
+      Synology volume is built. Checked byte for byte against the
+      kernel's device-mapper (`tests/oracle_lvm.rs`). Other segment types
+      (mirror, raid, thin, cache, snapshot, vdo) are refused by name
+- [ ] LUKS detection
 - [ ] Logical-partition (extended MBR) chain walking. Until it exists,
       `mbr::parse` and `probe` leave the extended container itself out of
       the list rather than reporting it as if it were one of the volumes
@@ -82,6 +89,7 @@ src/
   gpt.rs        GPT header + entry array parser, backup-header validator
   gpt_write.rs  GPT writer (protective MBR + primary + backup, CRCs)
   mbr.rs        MBR parser + writer
+  lvm.rs        LVM2 labels, metadata text, read-only logical volumes
   md.rs         Linux md superblocks + read-only array assembly
   mutation.rs   PartitionSet — in-memory add/remove/resize + commit
   sniff.rs      filesystem magic-byte sniffer
