@@ -21,11 +21,17 @@
 //! run without the arrays would otherwise be green having compared
 //! nothing.
 
+use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use disk_partitions::capi::{partitions_md_assemble, ArrayErrorCode};
 use disk_partitions::md::{read_superblock, MdArray, MdRole, MdVersion};
 use disk_partitions::{BlockRead, FileBlock};
+use fs_core::ffi::{
+    fs_core_device_close, fs_core_device_read_at, fs_core_device_size_bytes, fs_core_file_open,
+    FsCoreDevice, FsCoreErrorCode,
+};
 
 fn oracle_dir() -> PathBuf {
     let dir = std::env::var_os("MD_ORACLE_DIR")
@@ -207,4 +213,67 @@ fn every_v1_superblock_agrees_with_mdadm_examine() {
     }
     assert!(checked >= 30, "only {checked} 1.x members checked");
     println!("md oracle: {checked} superblocks agree with mdadm --examine");
+}
+
+/// Every byte of a C handle, read through `fs_core_device_read_at`.
+fn read_handle(what: &str, dev: *const FsCoreDevice) -> Vec<u8> {
+    let size = unsafe { fs_core_device_size_bytes(dev) };
+    let mut got = vec![0u8; size as usize];
+    let rc = unsafe { fs_core_device_read_at(dev, 0, got.as_mut_ptr(), got.len()) };
+    assert_eq!(rc, FsCoreErrorCode::Ok, "{what}: read through the handle");
+    got
+}
+
+fn file_handle(path: &Path) -> *mut FsCoreDevice {
+    let c = CString::new(path.to_str().expect("UTF-8 path")).unwrap();
+    let h = unsafe { fs_core_file_open(c.as_ptr(), false) };
+    assert!(!h.is_null(), "open {}", path.display());
+    h
+}
+
+/// The same arrays, assembled through `partitions_md_assemble` from
+/// `fs_core_file_open` handles, as a C caller would (#164). The members
+/// go in reversed, and every level with redundancy also loses member 0.
+#[test]
+fn every_array_reads_the_kernels_bytes_through_the_c_abi() {
+    let mut compared = 0u64;
+    for case in cases() {
+        let expect = fs::read(case.dir.join("array.bin")).expect("array.bin");
+        let mut sets: Vec<Vec<usize>> = vec![(0..case.members).rev().collect()];
+        if case.level > 0 {
+            sets.push((1..case.members).collect());
+        }
+        for slots in sets {
+            let what = format!("{}: members {slots:?} through the C ABI", case.name);
+            let members: Vec<*mut FsCoreDevice> = slots
+                .iter()
+                .map(|s| file_handle(&case.dir.join(format!("member-{s}.img"))))
+                .collect();
+            let ptrs: Vec<*const FsCoreDevice> = members.iter().map(|&m| m as *const _).collect();
+            let mut array: *mut FsCoreDevice = std::ptr::null_mut();
+            let mut reason = -1i32;
+            let rc = unsafe {
+                partitions_md_assemble(ptrs.as_ptr(), ptrs.len(), &mut array, &mut reason)
+            };
+            assert_eq!(rc, FsCoreErrorCode::Ok, "{what}: reason {reason}");
+            assert_eq!(reason, ArrayErrorCode::None as i32, "{what}: reason");
+            // The array holds its members: closing them first is allowed.
+            for m in members {
+                unsafe { fs_core_device_close(m) };
+            }
+            let got = read_handle(&what, array);
+            unsafe { fs_core_device_close(array) };
+            assert_eq!(
+                got.len(),
+                expect.len(),
+                "{what}: array size, ours vs the kernel's"
+            );
+            if got != expect {
+                let at = got.iter().zip(&expect).position(|(a, b)| a != b).unwrap();
+                panic!("{what}: first differing byte at {at}");
+            }
+            compared += expect.len() as u64;
+        }
+    }
+    println!("md oracle: {compared} bytes compared through the C ABI");
 }

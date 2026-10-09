@@ -1093,7 +1093,7 @@ impl<R: BlockRead> BlockRead for MdArray<R> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! Self-consistency only: superblocks and stripes built here, read
     //! back here. Whether these layouts are the kernel's is
     //! `tests/oracle_md.rs`'s question, not this module's.
@@ -1118,12 +1118,12 @@ mod tests {
         }
     }
 
-    const MEMBER: usize = 1 << 20;
-    const DATA_OFFSET: u64 = 64 * 1024;
+    pub(crate) const MEMBER: usize = 1 << 20;
+    pub(crate) const DATA_OFFSET: u64 = 64 * 1024;
     const CHUNK: u64 = 16 * 1024;
 
     /// A 1.2 superblock for slot `slot` of an `n`-member array.
-    fn sb_v12(level: i32, layout: u32, n: u32, slot: u16, events: u64) -> Vec<u8> {
+    pub(crate) fn sb_v12(level: i32, layout: u32, n: u32, slot: u16, events: u64) -> Vec<u8> {
         sb_v12_sized(
             level,
             layout,

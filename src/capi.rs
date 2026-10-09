@@ -559,6 +559,234 @@ pub unsafe extern "C" fn partitions_list_free(list: *mut PartitionList) {
 }
 
 // ---------------------------------------------------------------------------
+// md arrays and LVM logical volumes.
+// ---------------------------------------------------------------------------
+
+/// Why [`partitions_md_assemble`] or [`partitions_lvm_open`] refused, for
+/// C. Stable: do not renumber.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayErrorCode {
+    /// Not refused.
+    None = 0,
+    /// A member device failed to read.
+    Io = 1,
+    /// A member carries no md superblock, or a device no LVM2 label.
+    NoMetadata = 2,
+    /// A superblock, label or metadata-area checksum does not match.
+    BadChecksum = 3,
+    /// A structure is out of range, inconsistent or does not parse.
+    Corrupt = 4,
+    /// The members belong to more than one array.
+    MixedArrays = 5,
+    /// Two members claim the same slot.
+    DuplicateMember = 6,
+    /// Too many members or physical volumes are missing to read the data.
+    TooFewMembers = 7,
+    /// No logical volume of that name in the volume group.
+    NoSuchVolume = 8,
+    /// A level, layout, segment type or state this crate does not read.
+    Unsupported = 9,
+    /// No members were given.
+    NoMembers = 10,
+}
+
+impl From<&crate::md::MdError> for ArrayErrorCode {
+    fn from(e: &crate::md::MdError) -> Self {
+        use crate::md::MdError as E;
+        match e {
+            E::Block(_) => ArrayErrorCode::Io,
+            E::NoSuperblock { .. } => ArrayErrorCode::NoMetadata,
+            E::BadChecksum { .. } => ArrayErrorCode::BadChecksum,
+            E::Corrupt { .. } => ArrayErrorCode::Corrupt,
+            E::MixedArrays { .. } => ArrayErrorCode::MixedArrays,
+            E::DuplicateRole { .. } => ArrayErrorCode::DuplicateMember,
+            E::TooFewMembers { .. } | E::NoCopyLeft { .. } => ArrayErrorCode::TooFewMembers,
+            E::Unsupported(_) => ArrayErrorCode::Unsupported,
+            E::Empty => ArrayErrorCode::NoMembers,
+            // `MdError` is non-exhaustive; a variant added later is still
+            // a refusal, and the message says which.
+            #[allow(unreachable_patterns)]
+            _ => ArrayErrorCode::Unsupported,
+        }
+    }
+}
+
+impl From<&crate::lvm::LvmError> for ArrayErrorCode {
+    fn from(e: &crate::lvm::LvmError) -> Self {
+        use crate::lvm::LvmError as E;
+        match e {
+            E::Block(_) => ArrayErrorCode::Io,
+            E::NoLabel { .. } => ArrayErrorCode::NoMetadata,
+            E::BadChecksum { .. } => ArrayErrorCode::BadChecksum,
+            E::Corrupt(_) | E::Syntax { .. } => ArrayErrorCode::Corrupt,
+            E::NoSuchVolume(_) => ArrayErrorCode::NoSuchVolume,
+            E::MissingPv(_) => ArrayErrorCode::TooFewMembers,
+            E::Unsupported(_) => ArrayErrorCode::Unsupported,
+            #[allow(unreachable_patterns)]
+            _ => ArrayErrorCode::Unsupported,
+        }
+    }
+}
+
+/// The member handles behind `members[..count]`, each as its own `Arc`.
+/// `None` when the array pointer or any member is NULL.
+unsafe fn member_arcs(
+    members: *const *const FsCoreDevice,
+    count: usize,
+) -> Option<Vec<Arc<dyn fs_core::BlockDevice>>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+    if members.is_null() {
+        return None;
+    }
+    let handles = unsafe { std::slice::from_raw_parts(members, count) };
+    handles
+        .iter()
+        .map(|&h| (!h.is_null()).then(|| unsafe { (*h).inner().clone() }))
+        .collect()
+}
+
+/// Run `open` behind the boundary every array entry point shares: NULL
+/// checks, the out handle cleared first, a panic caught, the reason
+/// written when the caller asked for it, and the result handed out
+/// read-only.
+unsafe fn open_array<E, F, D>(
+    members: *const *const FsCoreDevice,
+    count: usize,
+    out: *mut *mut FsCoreDevice,
+    reason_out: *mut i32,
+    open: F,
+) -> FsCoreErrorCode
+where
+    F: FnOnce(Vec<Arc<dyn fs_core::BlockDevice>>) -> Result<D, E>,
+    D: fs_core::BlockRead + 'static,
+    E: std::fmt::Display,
+    for<'e> ArrayErrorCode: From<&'e E>,
+    E: AsBlockError,
+{
+    if out.is_null() {
+        return FsCoreErrorCode::NullArg;
+    }
+    unsafe { *out = ptr::null_mut() };
+    let mut reason = ArrayErrorCode::None;
+    let Some(devices) = (unsafe { member_arcs(members, count) }) else {
+        set_last_error("a member pointer is NULL");
+        return FsCoreErrorCode::NullArg;
+    };
+    if devices.is_empty() {
+        set_last_error("no members given");
+        if !reason_out.is_null() {
+            unsafe { *reason_out = ArrayErrorCode::NoMembers as i32 };
+        }
+        return FsCoreErrorCode::Custom;
+    }
+    let rc = ffi_guard(|| match open(devices) {
+        Ok(dev) => {
+            let ro = fs_core::ReadOnlyDevice::new(dev);
+            unsafe { *out = FsCoreDevice::into_handle(Arc::new(ro)) };
+            Ok(())
+        }
+        Err(e) => {
+            reason = ArrayErrorCode::from(&e);
+            Err(e
+                .take_block()
+                .unwrap_or_else(|e| fs_core::Error::Custom(e.to_string())))
+        }
+    });
+    // A panic has no reason of its own. It came from reading structures
+    // off the members, so it is reported as theirs being malformed.
+    if rc == FsCoreErrorCode::Panic {
+        reason = ArrayErrorCode::Corrupt;
+    }
+    if !reason_out.is_null() {
+        unsafe { *reason_out = reason as i32 };
+    }
+    rc
+}
+
+/// The underlying device error inside an md or LVM error, so a member's
+/// own failure reaches C with its own code rather than as `Custom`.
+trait AsBlockError: Sized {
+    fn take_block(self) -> Result<fs_core::Error, Self>;
+}
+
+impl AsBlockError for crate::md::MdError {
+    fn take_block(self) -> Result<fs_core::Error, Self> {
+        match self {
+            crate::md::MdError::Block(e) => Ok(e),
+            other => Err(other),
+        }
+    }
+}
+
+impl AsBlockError for crate::lvm::LvmError {
+    fn take_block(self) -> Result<fs_core::Error, Self> {
+        match self {
+            crate::lvm::LvmError::Block(e) => Ok(e),
+            other => Err(other),
+        }
+    }
+}
+
+/// Assemble an md (Linux software RAID) array from `count` member
+/// handles, in any order, into `*array_out`: a read-only device that
+/// reads the bytes the kernel's `/dev/mdX` would. A degraded array
+/// assembles while its level can still read every byte.
+///
+/// The array holds its own references to the members, so the caller may
+/// close them at once. On failure `*array_out` is NULL, the return is
+/// `NullArg` for a NULL pointer (including any NULL member), the member's
+/// code for a member that failed to read, and `Custom` otherwise. When
+/// `reason_out` is not NULL it receives an [`ArrayErrorCode`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn partitions_md_assemble(
+    members: *const *const FsCoreDevice,
+    count: usize,
+    array_out: *mut *mut FsCoreDevice,
+    reason_out: *mut i32,
+) -> FsCoreErrorCode {
+    unsafe {
+        open_array(members, count, array_out, reason_out, |devices| {
+            crate::md::MdArray::assemble(devices)
+        })
+    }
+}
+
+/// Open logical volume `name` (NUL-terminated UTF-8) of the LVM2 volume
+/// group on `count` device handles into `*volume_out`. The devices may be
+/// raw devices, partition slices or arrays from
+/// [`partitions_md_assemble`], in any order, and must include every
+/// physical volume the volume uses.
+///
+/// Ownership, the out handle and the codes are as for
+/// [`partitions_md_assemble`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn partitions_lvm_open(
+    devices: *const *const FsCoreDevice,
+    count: usize,
+    name: *const std::os::raw::c_char,
+    volume_out: *mut *mut FsCoreDevice,
+    reason_out: *mut i32,
+) -> FsCoreErrorCode {
+    if name.is_null() {
+        if !volume_out.is_null() {
+            unsafe { *volume_out = ptr::null_mut() };
+        }
+        return FsCoreErrorCode::NullArg;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe {
+        open_array(devices, count, volume_out, reason_out, |devices| {
+            crate::lvm::LogicalVolume::open(devices, &name)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -861,6 +1089,151 @@ mod tests {
 
         unsafe {
             fs_core_device_close(h);
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // md arrays and LVM logical volumes (#164). Whether the bytes are
+    // the kernel's is tests/oracle_md.rs's and tests/oracle_lvm.rs's
+    // question; these pin the boundary: arguments, reasons, ownership.
+    // -----------------------------------------------------------------
+
+    fn handle(bytes: Vec<u8>) -> *mut FsCoreDevice {
+        FsCoreDevice::into_handle(Arc::new(Bytes(Mutex::new(bytes))))
+    }
+
+    /// Two RAID1 members holding the same `payload` after their 1.2
+    /// superblocks.
+    fn raid1_members(payload: &[u8]) -> [*mut FsCoreDevice; 2] {
+        use crate::md::tests::{sb_v12, DATA_OFFSET, MEMBER};
+        [0u16, 1].map(|slot| {
+            let mut m = vec![0u8; MEMBER];
+            m[4096..8192].copy_from_slice(&sb_v12(1, 0, 2, slot, 7));
+            let at = DATA_OFFSET as usize;
+            m[at..at + payload.len()].copy_from_slice(payload);
+            handle(m)
+        })
+    }
+
+    #[test]
+    fn an_md_array_is_assembled_and_read_through_its_handle() {
+        let payload: Vec<u8> = (0..8192u32).map(|i| (i * 7 + 3) as u8).collect();
+        let members = raid1_members(&payload);
+        // Reversed: assembly places members by their superblocks.
+        let ptrs = [members[1] as *const _, members[0] as *const _];
+        let mut array: *mut FsCoreDevice = ptr::null_mut();
+        let mut reason = -1;
+        unsafe {
+            let rc = partitions_md_assemble(ptrs.as_ptr(), 2, &mut array, &mut reason);
+            assert_eq!(rc, FsCoreErrorCode::Ok);
+            assert_eq!(reason, ArrayErrorCode::None as i32);
+            assert!(!array.is_null());
+            // The array keeps its members alive.
+            fs_core_device_close(members[0]);
+            fs_core_device_close(members[1]);
+            assert!(fs_core::ffi::fs_core_device_size_bytes(array) >= payload.len() as u64);
+            assert!(
+                !fs_core::ffi::fs_core_device_is_writable(array),
+                "an array is handed out read-only"
+            );
+            let mut got = vec![0u8; payload.len()];
+            let rc = fs_core::ffi::fs_core_device_read_at(array, 0, got.as_mut_ptr(), got.len());
+            assert_eq!(rc, FsCoreErrorCode::Ok);
+            assert_eq!(got, payload);
+            fs_core_device_close(array);
+        }
+    }
+
+    #[test]
+    fn a_degraded_md_array_still_assembles_through_the_c_abi() {
+        let payload = vec![0x5Au8; 4096];
+        let members = raid1_members(&payload);
+        let ptrs = [members[1] as *const _];
+        let mut array: *mut FsCoreDevice = ptr::null_mut();
+        unsafe {
+            let rc = partitions_md_assemble(ptrs.as_ptr(), 1, &mut array, ptr::null_mut());
+            assert_eq!(
+                rc,
+                FsCoreErrorCode::Ok,
+                "RAID1 reads with one member of two"
+            );
+            let mut got = vec![0u8; payload.len()];
+            fs_core::ffi::fs_core_device_read_at(array, 0, got.as_mut_ptr(), got.len());
+            assert_eq!(got, payload);
+            fs_core_device_close(array);
+            fs_core_device_close(members[0]);
+            fs_core_device_close(members[1]);
+        }
+    }
+
+    #[test]
+    fn md_assemble_refuses_null_arguments() {
+        let dev = handle(vec![0u8; 4096]);
+        let ptrs = [dev as *const FsCoreDevice];
+        let mut out: *mut FsCoreDevice = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                partitions_md_assemble(ptr::null(), 1, &mut out, ptr::null_mut()),
+                FsCoreErrorCode::NullArg
+            );
+            assert_eq!(
+                partitions_md_assemble(ptrs.as_ptr(), 1, ptr::null_mut(), ptr::null_mut()),
+                FsCoreErrorCode::NullArg
+            );
+            let with_null = [dev as *const FsCoreDevice, ptr::null()];
+            let mut reason = -1;
+            assert_eq!(
+                partitions_md_assemble(with_null.as_ptr(), 2, &mut out, &mut reason),
+                FsCoreErrorCode::NullArg,
+                "a NULL member is a NULL argument"
+            );
+            assert!(out.is_null());
+            fs_core_device_close(dev);
+        }
+    }
+
+    #[test]
+    fn md_assemble_says_why_it_refused() {
+        let mut out: *mut FsCoreDevice = ptr::NonNull::dangling().as_ptr();
+        let mut reason = -1;
+        unsafe {
+            let empty: [*const FsCoreDevice; 0] = [];
+            let rc = partitions_md_assemble(empty.as_ptr(), 0, &mut out, &mut reason);
+            assert_eq!(rc, FsCoreErrorCode::Custom);
+            assert_eq!(reason, ArrayErrorCode::NoMembers as i32);
+            assert!(out.is_null(), "the out pointer is cleared on failure");
+
+            let blank = handle(vec![0u8; 1 << 20]);
+            let ptrs = [blank as *const FsCoreDevice];
+            let rc = partitions_md_assemble(ptrs.as_ptr(), 1, &mut out, &mut reason);
+            assert_eq!(rc, FsCoreErrorCode::Custom);
+            assert_eq!(reason, ArrayErrorCode::NoMetadata as i32);
+            assert!(out.is_null());
+            fs_core_device_close(blank);
+        }
+    }
+
+    #[test]
+    fn lvm_open_refuses_null_arguments_and_says_why_it_refused() {
+        let blank = handle(vec![0u8; 1 << 20]);
+        let ptrs = [blank as *const FsCoreDevice];
+        let name = std::ffi::CString::new("lv").unwrap();
+        let mut out: *mut FsCoreDevice = ptr::null_mut();
+        let mut reason = -1;
+        unsafe {
+            assert_eq!(
+                partitions_lvm_open(ptrs.as_ptr(), 1, ptr::null(), &mut out, &mut reason),
+                FsCoreErrorCode::NullArg
+            );
+            assert_eq!(
+                partitions_lvm_open(ptr::null(), 1, name.as_ptr(), &mut out, &mut reason),
+                FsCoreErrorCode::NullArg
+            );
+            let rc = partitions_lvm_open(ptrs.as_ptr(), 1, name.as_ptr(), &mut out, &mut reason);
+            assert_eq!(rc, FsCoreErrorCode::Custom);
+            assert_eq!(reason, ArrayErrorCode::NoMetadata as i32);
+            assert!(out.is_null());
+            fs_core_device_close(blank);
         }
     }
 }

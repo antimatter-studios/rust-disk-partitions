@@ -23,7 +23,7 @@ It does **not** mount anything, decode files, or write — it's a probe.
 - [x] MBR with GPT-protective fallthrough
 - [x] FS sniff: ext2/3/4, NTFS, exFAT, FAT16, FAT32, HFS+, APFS, Linux swap, ISO 9660, SquashFS
 - [x] `SliceReader` adapter — rebases offsets on a sub-range of any `BlockRead` (planned to move into `rust-fs-core` since slicing is a generic block-layer concern; this crate will re-export for backwards compatibility)
-- [x] C ABI for FFI (`partitions_probe`, `partitions_count`, `partitions_table_kind`, `partitions_get`, `partitions_sniff`, `partitions_open_slice`, `partitions_list_free`; header in `include/partitions.h`)
+- [x] C ABI for FFI (`partitions_probe`, `partitions_count`, `partitions_table_kind`, `partitions_get`, `partitions_sniff`, `partitions_open_slice`, `partitions_list_free`, and `partitions_md_assemble` and `partitions_lvm_open`, which hand out an md array or a logical volume as one more device handle; header in `include/disk_partitions.h`)
 - [x] Linux software RAID (`md`): superblocks 0.90, 1.0, 1.1 and 1.2
       (`md::read_superblock`), and `md::MdArray`, which assembles the
       members into one `BlockRead` reading the bytes the kernel's `/dev/mdX`
