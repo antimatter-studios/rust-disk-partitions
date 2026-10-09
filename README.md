@@ -27,13 +27,14 @@ It does **not** mount anything, decode files, or write — it's a probe.
 - [x] Linux software RAID (`md`): superblocks 0.90, 1.0, 1.1 and 1.2
       (`md::read_superblock`), and `md::MdArray`, which assembles the
       members into one `BlockRead` reading the bytes the kernel's `/dev/mdX`
-      would — RAID0 (one zone, or several in either recorded layout),
+      would — linear (members end to end, with or without rounding),
+      RAID0 (one zone, or several in either recorded layout),
       RAID1, RAID4, RAID5 (all six layouts), RAID6 (every layout the
       kernel has, including the DDF and `-6` ones, with up to two members
       missing) and RAID10 (near, far and offset copies), the others each
       with one redundant member missing. Checked byte for byte against
-      arrays the kernel built (`tests/oracle_md.rs`). Not yet: linear
-      arrays and arrays mid-reshape, both refused by name
+      arrays the kernel built (`tests/oracle_md.rs`). Not yet: arrays
+      mid-reshape, refused by name
 - [x] LVM2 (`lvm`): physical-volume labels (`lvm::read_pv_label`), the
       newest volume-group metadata (`lvm::read_volume_group`), and
       `lvm::LogicalVolume`, which reads a linear or striped logical volume

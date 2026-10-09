@@ -27,6 +27,12 @@ never does.
   Checked byte for byte against a thin volume and a thin snapshot lvm2
   built and the kernel filled. A thin volume over an external origin is
   refused.
+- **md linear arrays are read (#165).** The members' data areas end to end in
+  slot order, each rounded down to the chunk when the superblock records a
+  rounding, as the kernel's `linear_conf` sizes them. Checked byte for byte
+  against linear arrays mdadm built in metadata 1.2 and 0.90, and one
+  rounded to 64 KiB, on a kernel that has the linear personality again
+  (it was absent from 6.8 to 6.13).
 
 ## [0.6.1] — 2026-10-09
 

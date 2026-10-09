@@ -29,16 +29,17 @@
 //!
 //! | level | layouts | members that may be missing |
 //! |---|---|---|
-//! | RAID0 | one zone, or several over members of different sizes (the `alternate` layout) | none |
+//! | linear | members end to end, each rounded down to the chunk when one is recorded | none |
+//! | RAID0 | one zone, or several over members of different sizes (the `alternate` and `original` layouts) | none |
 //! | RAID1 | — | all but one |
 //! | RAID4 | parity on the last member | one |
 //! | RAID5 | left/right, symmetric/asymmetric, parity-first, parity-last | one |
-//! | RAID6 | left-symmetric (the `mdadm` default) | two, through P and Q |
+//! | RAID6 | every layout `mdadm` creates, the `-6` and DDF ones included | two, through P and Q |
 //! | RAID10 | near, far and offset copies | any, while one copy of every chunk is left |
 //!
-//! Anything else is refused by name with [`MdError::Unsupported`]: linear
-//! arrays, multi-zone RAID0 in the `original` layout or with no layout
-//! recorded, and an array in the middle of a reshape. Refusing is the
+//! Anything else is refused by name with [`MdError::Unsupported`]:
+//! multi-zone RAID0 with no layout recorded, and an array in the middle of
+//! a reshape. Refusing is the
 //! point: a layout read with the wrong geometry returns plausible bytes
 //! from the wrong places.
 //!
@@ -78,6 +79,7 @@ const FEATURE_RECOVERY_OFFSET: u32 = 0x2;
 const FEATURE_RESHAPE_ACTIVE: u32 = 0x4;
 
 /// The level codes the superblock stores.
+const LEVEL_LINEAR: i32 = -1;
 const LEVEL_RAID0: i32 = 0;
 const LEVEL_RAID1: i32 = 1;
 const LEVEL_RAID4: i32 = 4;
@@ -956,6 +958,31 @@ impl<R: BlockRead> MdArray<R> {
         let mut zones = Vec::new();
         let mut raid10 = None;
         let size = match level {
+            LEVEL_LINEAR => {
+                need(n)?;
+                // Each member's data area, rounded down to the chunk when
+                // the superblock records one ("rounding"), placed end to
+                // end in slot order: the kernel's `linear_conf`. A zone of
+                // one member each, read by `read_zoned`.
+                let mut start = 0u64;
+                for (slot, m) in slots.iter().enumerate() {
+                    let m = m.as_ref().expect("every slot is present");
+                    let len = m
+                        .data_size
+                        .checked_div(chunk)
+                        .map_or(m.data_size, |rows| rows * chunk);
+                    zones.push(Zone {
+                        start,
+                        len,
+                        dev_start: 0,
+                        slots: vec![slot],
+                    });
+                    start = start
+                        .checked_add(len)
+                        .ok_or_else(|| corrupt(0, "array size overflows"))?;
+                }
+                start
+            }
             LEVEL_RAID1 => {
                 need(1)?;
                 per_member
@@ -1057,7 +1084,7 @@ impl<R: BlockRead> MdArray<R> {
             let span = match level {
                 LEVEL_RAID1 => size,
                 // Zones end within each member's own data size.
-                LEVEL_RAID0 => 0,
+                LEVEL_RAID0 | LEVEL_LINEAR => 0,
                 _ => per_member,
             };
             match m.data_offset.checked_add(span) {
@@ -1113,8 +1140,9 @@ impl<R: BlockRead> MdArray<R> {
         Err(last.unwrap_or_else(|| fs_core::Error::Custom("no RAID1 member present".into())))
     }
 
-    /// Read RAID0 bytes from `pos` up to the end of its chunk or zone,
-    /// whichever is nearer; returns how many were read.
+    /// Read RAID0 or linear bytes from `pos` up to the end of its zone or,
+    /// at RAID0, of its chunk, whichever is nearer; returns how many were
+    /// read.
     fn read_zoned(&self, pos: u64, buf: &mut [u8]) -> fs_core::Result<usize> {
         let z = self
             .zones
@@ -1122,6 +1150,11 @@ impl<R: BlockRead> MdArray<R> {
             .find(|z| pos >= z.start && pos < z.start + z.len)
             .expect("zones cover the array");
         let within = pos - z.start;
+        if self.level == LEVEL_LINEAR {
+            let take = ((z.len - within) as usize).min(buf.len());
+            self.read_member(z.slots[0], z.dev_start + within, &mut buf[..take])?;
+            return Ok(take);
+        }
         let k = z.slots.len() as u64;
         let (c, inner) = (within / self.chunk, within % self.chunk);
         let take = ((self.chunk - inner) as usize).min(buf.len());
@@ -1336,7 +1369,7 @@ impl<R: BlockRead> BlockRead for MdArray<R> {
             return self.read_raid1(offset, buf);
         }
         let mut done = 0usize;
-        if self.level == LEVEL_RAID0 {
+        if self.level == LEVEL_RAID0 || self.level == LEVEL_LINEAR {
             while done < buf.len() {
                 done += self.read_zoned(offset + done as u64, &mut buf[done..])?;
             }
