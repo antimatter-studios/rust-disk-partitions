@@ -188,6 +188,54 @@ int32_t          partitions_sniff_device(const FsCoreDevice *device,
 FsCoreDevice   *partitions_open_slice(const PartitionList *list, size_t index);
 void             partitions_list_free(PartitionList *list);
 
+/* -------------------------------------------------------------------------
+ * md arrays and LVM2 logical volumes.
+ *
+ * Both take N device handles, in any order, and return ONE new device handle
+ * that reads the bytes the kernel's /dev/mdX or /dev/<vg>/<lv> would. The
+ * result is read-only and is used wherever a partitions_open_slice handle is:
+ * feed it to a filesystem driver, to partitions_probe, or to
+ * partitions_lvm_open (an LVM volume group on an md array). It holds its own
+ * references to the members, so the caller may close them at once. Close the
+ * result with fs_core_device_close.
+ *
+ * On failure the out handle is set to NULL, the return is FS_CORE_NULL_ARG
+ * for a NULL pointer (including any NULL member), the member's code for a
+ * member that failed to read, and FS_CORE_CUSTOM otherwise; the thread-local
+ * last-error has detail. When reason_out is not NULL it receives one of
+ * PartitionsArrayError, PART_ARRAY_OK on success. Stable: do not renumber.
+ * ------------------------------------------------------------------------- */
+
+typedef enum {
+    PART_ARRAY_OK               = 0,
+    PART_ARRAY_IO               = 1,  /* a member failed to read */
+    PART_ARRAY_NO_METADATA      = 2,  /* no md superblock / no LVM2 label */
+    PART_ARRAY_BAD_CHECKSUM     = 3,
+    PART_ARRAY_CORRUPT          = 4,  /* out of range, inconsistent, or the
+                                       * LVM metadata text does not parse */
+    PART_ARRAY_MIXED_ARRAYS     = 5,  /* members of more than one array */
+    PART_ARRAY_DUPLICATE_MEMBER = 6,  /* two members claim one slot */
+    PART_ARRAY_TOO_FEW_MEMBERS  = 7,  /* too many members or PVs missing */
+    PART_ARRAY_NO_SUCH_VOLUME   = 8,  /* no logical volume of that name */
+    PART_ARRAY_UNSUPPORTED      = 9,  /* level, layout, segment type or
+                                       * state this library does not read */
+    PART_ARRAY_NO_MEMBERS       = 10, /* count was 0 */
+} PartitionsArrayError;
+
+/* Assemble an md (Linux software RAID) array from its member devices. A
+ * degraded array assembles while its level can still read every byte. */
+FsCoreErrorCode  partitions_md_assemble(const FsCoreDevice *const *members,
+                                         size_t count,
+                                         FsCoreDevice **array_out,
+                                         int32_t *reason_out);
+/* Open logical volume `name` (NUL-terminated UTF-8) of the volume group on
+ * `devices`, which must include every physical volume the volume uses. */
+FsCoreErrorCode  partitions_lvm_open(const FsCoreDevice *const *devices,
+                                      size_t count,
+                                      const char *name,
+                                      FsCoreDevice **volume_out,
+                                      int32_t *reason_out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

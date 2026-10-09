@@ -13,13 +13,22 @@
 //! tools)` job before this test runs. When they are missing this test
 //! fails naming the script; it does not skip.
 
+use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use disk_partitions::capi::{
+    partitions_list_free, partitions_lvm_open, partitions_md_assemble, partitions_open_slice,
+    partitions_probe, ArrayErrorCode, PartitionList,
+};
 use disk_partitions::lvm::{read_volume_group, LogicalVolume};
 use disk_partitions::md::MdArray;
 use disk_partitions::{probe, BlockRead, FileBlock, OwnedSlice};
+use fs_core::ffi::{
+    fs_core_device_close, fs_core_device_read_at, fs_core_device_size_bytes, fs_core_file_open,
+    FsCoreDevice, FsCoreErrorCode,
+};
 
 fn oracle_dir() -> PathBuf {
     let dir = std::env::var_os("LVM_ORACLE_DIR")
@@ -125,5 +134,112 @@ fn a_synology_layout_reads_through_gpt_md_and_lvm() {
             &lv,
             &dir.join("lv.bin"),
         );
+    }
+}
+
+fn file_handle(path: &Path) -> *mut FsCoreDevice {
+    let c = CString::new(path.to_str().expect("UTF-8 path")).unwrap();
+    let h = unsafe { fs_core_file_open(c.as_ptr(), false) };
+    assert!(!h.is_null(), "open {}", path.display());
+    h
+}
+
+/// Open `name` through `partitions_lvm_open`, read every byte through the
+/// handle, and close it.
+fn lv_through_c(what: &str, devices: &[*mut FsCoreDevice], name: &str) -> Vec<u8> {
+    let ptrs: Vec<*const FsCoreDevice> = devices.iter().map(|&d| d as *const _).collect();
+    let cname = CString::new(name).unwrap();
+    let mut lv: *mut FsCoreDevice = std::ptr::null_mut();
+    let mut reason = -1i32;
+    let rc = unsafe {
+        partitions_lvm_open(
+            ptrs.as_ptr(),
+            ptrs.len(),
+            cname.as_ptr(),
+            &mut lv,
+            &mut reason,
+        )
+    };
+    assert_eq!(rc, FsCoreErrorCode::Ok, "{what}: reason {reason}");
+    assert_eq!(reason, ArrayErrorCode::None as i32, "{what}: reason");
+    let size = unsafe { fs_core_device_size_bytes(lv) };
+    let mut got = vec![0u8; size as usize];
+    let rc = unsafe { fs_core_device_read_at(lv, 0, got.as_mut_ptr(), got.len()) };
+    assert_eq!(rc, FsCoreErrorCode::Ok, "{what}: read through the handle");
+    unsafe { fs_core_device_close(lv) };
+    got
+}
+
+fn same_bytes(what: &str, got: &[u8], expect_path: &Path) {
+    let expect = fs::read(expect_path).unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert_eq!(
+        got.len(),
+        expect.len(),
+        "{what}: size, ours vs the kernel's"
+    );
+    if got != expect {
+        let at = got.iter().zip(&expect).position(|(a, b)| a != b).unwrap();
+        panic!("{what}: first differing byte at {at}");
+    }
+    println!("lvm oracle: {what} matches the kernel through the C ABI");
+}
+
+/// A striped volume opened through `partitions_lvm_open` from
+/// `fs_core_file_open` handles, PVs reversed (#164).
+#[test]
+fn a_striped_volume_reads_the_kernels_bytes_through_the_c_abi() {
+    let dir = oracle_dir().join("striped");
+    let pvs: Vec<*mut FsCoreDevice> = (0..3)
+        .rev()
+        .map(|i| file_handle(&dir.join(format!("pv-{i}.img"))))
+        .collect();
+    let got = lv_through_c("striped/s", &pvs, "s");
+    for pv in pvs {
+        unsafe { fs_core_device_close(pv) };
+    }
+    same_bytes("striped/s", &got, &dir.join("s.bin"));
+}
+
+/// The Synology layout through nothing but the C ABI: each disk's second
+/// partition from `partitions_probe` and `partitions_open_slice`, the
+/// RAID5 array from `partitions_md_assemble` with one disk missing, and
+/// the volume from `partitions_lvm_open` over the array's handle (#164).
+#[test]
+fn a_synology_layout_reads_through_gpt_md_and_lvm_in_the_c_abi() {
+    let dir = oracle_dir().join("synology");
+    for skip in [None, Some(0)] {
+        let mut slices = Vec::new();
+        for n in (0..3).filter(|&n| Some(n) != skip) {
+            let disk = file_handle(&dir.join(format!("disk-{n}.img")));
+            let mut list: *mut PartitionList = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { partitions_probe(disk, &mut list) },
+                FsCoreErrorCode::Ok
+            );
+            let slice = unsafe { partitions_open_slice(list, 1) };
+            assert!(!slice.is_null(), "disk {n}: partition 2");
+            unsafe {
+                partitions_list_free(list);
+                fs_core_device_close(disk);
+            }
+            slices.push(slice);
+        }
+        let ptrs: Vec<*const FsCoreDevice> = slices.iter().map(|&s| s as *const _).collect();
+        let mut array: *mut FsCoreDevice = std::ptr::null_mut();
+        let mut reason = -1i32;
+        let rc =
+            unsafe { partitions_md_assemble(ptrs.as_ptr(), ptrs.len(), &mut array, &mut reason) };
+        assert_eq!(
+            rc,
+            FsCoreErrorCode::Ok,
+            "data array without disk {skip:?}: reason {reason}"
+        );
+        for s in slices {
+            unsafe { fs_core_device_close(s) };
+        }
+        let what = format!("synology/vg1000/lv without disk {skip:?}");
+        let got = lv_through_c(&what, &[array], "lv");
+        unsafe { fs_core_device_close(array) };
+        same_bytes(&what, &got, &dir.join("lv.bin"));
     }
 }
