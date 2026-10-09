@@ -2011,4 +2011,53 @@ pub(crate) mod tests {
         }
         assert_eq!(Raid10::near(2).copies(3, 1), vec![(2, 0), (0, 1)]);
     }
+    /// A linear array: its members' data areas end to end, in slot
+    /// order, each rounded down to the chunk ("rounding") when the
+    /// superblock records one, as the kernel's `linear_conf` sizes them.
+    #[test]
+    fn a_linear_array_reads_its_members_end_to_end() {
+        // Data areas of 40, 16 and 24 KiB plus 1 KiB, so rounding to a
+        // 16 KiB chunk drops a tail from every member.
+        let kib = 1024u64;
+        let sizes = [41 * kib, 17 * kib, 25 * kib];
+        for chunk_sectors in [0u64, CHUNK / SECTOR] {
+            let used: Vec<u64> = sizes
+                .iter()
+                .map(|&s| match chunk_sectors * SECTOR {
+                    0 => s,
+                    c => s / c * c,
+                })
+                .collect();
+            let logical = pattern(used.iter().sum::<u64>() as usize);
+            let mut at = 0usize;
+            let mut members = Vec::new();
+            for (slot, (&size, &take)) in sizes.iter().zip(&used).enumerate() {
+                let mut m = vec![0u8; MEMBER];
+                let mut sb = sb_v12_sized(-1, 0, 3, slot as u16, 1, size / SECTOR);
+                sb[88..92].copy_from_slice(&(chunk_sectors as u32).to_le_bytes());
+                let c = v1_checksum(&sb[..256 + 2 * 3]);
+                sb[216..220].copy_from_slice(&c.to_le_bytes());
+                m[4096..8192].copy_from_slice(&sb);
+                let o = DATA_OFFSET as usize;
+                m[o..o + take as usize].copy_from_slice(&logical[at..at + take as usize]);
+                at += take as usize;
+                members.push(Mem(m));
+            }
+            // Any order: each member's slot is in its superblock.
+            members.reverse();
+            let a = MdArray::assemble(members).expect("assembles");
+            assert_eq!(
+                a.size_bytes(),
+                logical.len() as u64,
+                "chunk {chunk_sectors}"
+            );
+            let mut got = vec![0u8; logical.len()];
+            a.read_at(0, &mut got).unwrap();
+            assert_eq!(got, logical, "chunk {chunk_sectors}");
+            // Across the first member's end into the second.
+            let mut part = vec![0u8; 300];
+            a.read_at(used[0] - 100, &mut part).unwrap();
+            assert_eq!(part[..], logical[used[0] as usize - 100..][..300]);
+        }
+    }
 }

@@ -26,6 +26,8 @@ command -v mdadm >/dev/null || { echo "mdadm not found (apt-get install mdadm); 
 # Named here so a missing personality says which, rather than surfacing
 # as a create error further down.
 modprobe -a raid0 raid1 raid456 raid10 || { echo "cannot load raid0, raid1, raid456 or raid10; this script does not skip" >&2; exit 1; }
+# md's linear personality left the kernel in 6.8 and came back in 6.14.
+modprobe linear || { echo "cannot load md linear on kernel $(uname -r) (absent from 6.8 to 6.13); this script does not skip" >&2; exit 1; }
 
 rm -rf "$out"
 mkdir -p "$out"
@@ -114,6 +116,9 @@ make_case raid10-o2-v1.2 10 3 1.2 --chunk=64 --layout=o2
 make_case raid10-n3-v1.2 10 4 1.2 --chunk=64 --layout=n3
 SIZES="40 16 24" make_case raid0-zones-v1.2 0 3 1.2 --chunk=64 --layout=alternate
 SIZES="40 16 24" make_case raid0-zones-orig-v1.2 0 3 1.2 --chunk=64 --layout=original
+SIZES="40 16 24" make_case linear-v1.2 linear 3 1.2
+SIZES="40 16 24" make_case linear-v0.90 linear 3 0.90
+SIZES="41 17 25" make_case linear-rounded-v1.2 linear 3 1.2 --rounding=64
 # Every other RAID6 layout, on four members: the rotations, P and Q
 # first or last, the three DDF layouts (Q's coefficients by member), and
 # the -6 layouts (a RAID5 layout with Q on the last member). 8 MiB members
