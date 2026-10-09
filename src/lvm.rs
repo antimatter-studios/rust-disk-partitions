@@ -1139,22 +1139,46 @@ version = 1
         let crc = lvm_crc(&d[l + 20..l + SECTOR as usize]);
         put32(&mut d, l + 16, crc);
 
-        let m = MDA_START as usize;
+        write_mda(&mut d, MDA_START, text, ring_at);
+        d
+    }
+
+    /// A metadata area at `start` holding `text` at `ring_at` bytes from
+    /// the area's start, wrapping round the ring if it runs off the end.
+    fn write_mda(d: &mut [u8], start: u64, text: &str, ring_at: u64) {
+        let m = start as usize;
         let text = text.as_bytes();
         d[m + 4..m + 20].copy_from_slice(MDA_MAGIC);
-        put32(&mut d, m + 20, 1);
-        put64(&mut d, m + 24, MDA_START);
-        put64(&mut d, m + 32, MDA_SIZE);
-        put64(&mut d, m + 40, ring_at);
-        put64(&mut d, m + 48, text.len() as u64);
-        put32(&mut d, m + 56, lvm_crc(text));
+        put32(d, m + 20, 1);
+        put64(d, m + 24, start);
+        put64(d, m + 32, MDA_SIZE);
+        put64(d, m + 40, ring_at);
+        put64(d, m + 48, text.len() as u64);
+        put32(d, m + 56, lvm_crc(text));
         let ring = (MDA_SIZE - MDA_HEADER_SIZE) as usize;
         let first = (ring_at - MDA_HEADER_SIZE) as usize;
         for (i, &b) in text.iter().enumerate() {
             d[m + MDA_HEADER_SIZE as usize + (first + i) % ring] = b;
         }
         let crc = lvm_crc(&d[m + 4..m + MDA_HEADER_SIZE as usize]);
-        put32(&mut d, m, crc);
+        put32(d, m, crc);
+    }
+
+    /// Where a PV's second metadata area goes: the end of the device, as
+    /// `pvcreate --pvmetadatacopies 2` puts it.
+    const MDA2_START: u64 = DEV as u64 - MDA_SIZE;
+
+    /// [`pv_image`] with a second metadata area at the end of the device
+    /// holding `text2`.
+    fn pv_image_two_mdas(uuid: &str, text1: &str, text2: &str) -> Vec<u8> {
+        let mut d = pv_image(uuid, text1, MDA_HEADER_SIZE);
+        let h = SECTOR as usize + 32;
+        put64(&mut d, h + 88, MDA2_START);
+        put64(&mut d, h + 96, MDA_SIZE);
+        let l = SECTOR as usize;
+        let crc = lvm_crc(&d[l + 20..l + SECTOR as usize]);
+        put32(&mut d, l + 16, crc);
+        write_mda(&mut d, MDA2_START, text2, MDA_HEADER_SIZE);
         d
     }
 
@@ -1449,5 +1473,43 @@ pool = "pool_tdata"
         assert_eq!(found.volume_groups.len(), 1);
         assert_eq!(found.volume_groups[0].volume_group.seqno, 3);
         assert_eq!(found.volume_groups[0].missing, ["pv1"]);
+    }
+
+    #[test]
+    fn of_two_metadata_areas_the_newer_copy_is_read() {
+        for newer_second in [true, false] {
+            let (old, new) = (vg_text(3, ""), vg_text(4, LVS));
+            let (t1, t2) = if newer_second {
+                (&old, &new)
+            } else {
+                (&new, &old)
+            };
+            let pv = pv_image_two_mdas(&uuid(1), t1, t2);
+            let label = read_pv_label(&Mem(pv.clone())).unwrap().unwrap();
+            assert_eq!(label.metadata_areas.len(), 2);
+            let vg = read_volume_group(&[Mem(pv)]).unwrap();
+            assert_eq!(vg.seqno, 4, "newer copy second: {newer_second}");
+        }
+    }
+
+    #[test]
+    fn a_damaged_first_metadata_area_is_read_from_the_second() {
+        let text = vg_text(4, LVS);
+        let mut pv = pv_image_two_mdas(&uuid(1), &text, &text);
+        // The first area's header checksum no longer matches.
+        pv[MDA_START as usize + 30] ^= 1;
+        let vg = read_volume_group(&[Mem(pv.clone())]).unwrap();
+        assert_eq!(vg.seqno, 4, "the second copy is read");
+
+        // With both damaged, the first area's error is the one reported.
+        pv[MDA2_START as usize + 30] ^= 1;
+        let label = read_pv_label(&Mem(pv.clone())).unwrap().unwrap();
+        assert!(matches!(
+            read_metadata_text(&Mem(pv), &label),
+            Err(LvmError::BadChecksum {
+                what: "metadata area header",
+                ..
+            })
+        ));
     }
 }

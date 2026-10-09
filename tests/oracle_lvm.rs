@@ -23,7 +23,7 @@ use disk_partitions::capi::{
     partitions_probe, ArrayErrorCode, PartitionList,
 };
 use disk_partitions::container::{self, Container};
-use disk_partitions::lvm::{self, read_volume_group, LogicalVolume};
+use disk_partitions::lvm::{self, read_pv_label, read_volume_group, LogicalVolume};
 use disk_partitions::md::{self, MdArray};
 use disk_partitions::{probe, BlockRead, FileBlock, OwnedSlice};
 use fs_core::ffi::{
@@ -318,4 +318,107 @@ fn a_synology_layout_is_discovered_from_the_disks_alone() {
             &dir.join("lv.bin"),
         );
     }
+}
+
+/// Synology's SHR on disks of two sizes: an md RAID5 over a partition of
+/// every disk and an md RAID1 over the larger disks' extra partitions,
+/// both PVs of one VG, with the LV running across the two (#166). With
+/// each disk missing in turn, both arrays still read.
+#[test]
+fn a_volume_group_over_two_md_arrays_reads_the_kernels_bytes() {
+    let dir = oracle_dir().join("shr");
+    let disk = |n: usize| -> Arc<dyn BlockRead> {
+        Arc::new(FileBlock::open(dir.join(format!("disk-{n}.img"))).unwrap())
+    };
+    for skip in [None, Some(0), Some(3)] {
+        let mut raid5 = Vec::new();
+        let mut raid1 = Vec::new();
+        for n in (0..4).filter(|&n| Some(n) != skip) {
+            let d = disk(n);
+            let (_, parts) = probe(&*d).unwrap();
+            raid5.push(OwnedSlice::new(d.clone(), parts[0].start, parts[0].length));
+            if n >= 2 {
+                raid1.push(OwnedSlice::new(d.clone(), parts[1].start, parts[1].length));
+            }
+        }
+        let raid5 = MdArray::assemble(raid5).unwrap();
+        let raid1 = MdArray::assemble(raid1).unwrap();
+        assert_eq!(raid5.superblock().level, 5);
+        assert_eq!(raid1.superblock().level, 1);
+        // In either order: the metadata says which PV is which.
+        for order in [[0, 1], [1, 0]] {
+            let arrays = [&raid5, &raid1];
+            let devs: Vec<&MdArray<OwnedSlice>> = order.iter().map(|&i| arrays[i]).collect();
+            let vg = read_volume_group(&devs).unwrap();
+            assert_eq!(vg.name, "vgshr");
+            assert_eq!(vg.physical_volumes.len(), 2);
+            let lv = LogicalVolume::open(devs, "lv").unwrap();
+            let pvs_used: std::collections::BTreeSet<&str> = lv
+                .info()
+                .segments
+                .iter()
+                .flat_map(|s| s.stripes.iter().map(|st| st.pv.as_str()))
+                .collect();
+            assert_eq!(pvs_used.len(), 2, "the volume spans both arrays");
+            same(
+                &format!("shr/vgshr/lv without disk {skip:?}, PVs {order:?}"),
+                &lv,
+                &dir.join("lv.bin"),
+            );
+        }
+    }
+}
+
+/// An in-memory copy of an image, so a test can damage it.
+struct Copy(Vec<u8>);
+impl BlockRead for Copy {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+        let o = offset as usize;
+        let end = o
+            .checked_add(buf.len())
+            .filter(|&e| e <= self.0.len())
+            .ok_or(fs_core::Error::OutOfBounds {
+                offset,
+                len: buf.len() as u64,
+                size: self.0.len() as u64,
+            })?;
+        buf.copy_from_slice(&self.0[o..end]);
+        Ok(())
+    }
+    fn size_bytes(&self) -> u64 {
+        self.0.len() as u64
+    }
+}
+
+/// PVs made with `--pvmetadatacopies 2` keep a second copy of the
+/// metadata at their end. The volume reads, and still reads when every
+/// PV's first copy is damaged and only the second is left (#166).
+#[test]
+fn a_second_metadata_copy_is_read_when_the_first_is_damaged() {
+    let dir = oracle_dir().join("two-mdas");
+    let images: Vec<Vec<u8>> = (0..2)
+        .map(|n| fs::read(dir.join(format!("pv-{n}.img"))).unwrap())
+        .collect();
+    let label = read_pv_label(&Copy(images[0].clone())).unwrap().unwrap();
+    assert_eq!(
+        label.metadata_areas.len(),
+        2,
+        "lvm2 wrote two metadata areas: {:?}",
+        label.metadata_areas
+    );
+    let lv = LogicalVolume::open(images.iter().cloned().map(Copy).collect(), "m").unwrap();
+    same("two-mdas/m", &lv, &dir.join("m.bin"));
+
+    let damaged: Vec<Copy> = images
+        .into_iter()
+        .map(|mut img| {
+            let label = read_pv_label(&Copy(img.clone())).unwrap().unwrap();
+            let (first, _) = label.metadata_areas[0];
+            // A byte of the first area's header: its checksum fails.
+            img[first as usize + 30] ^= 0xff;
+            Copy(img)
+        })
+        .collect();
+    let lv = LogicalVolume::open(damaged, "m").unwrap();
+    same("two-mdas/m, first copies damaged", &lv, &dir.join("m.bin"));
 }
