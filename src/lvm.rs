@@ -21,10 +21,17 @@
 //!   integers, lists, and `#` comments.
 //! * Segments of type `striped`, which is how LVM writes both linear
 //!   volumes (`stripe_count = 1`) and striped ones.
+//! * `raid1`, `raid4`, `raid5*`, `raid6*`, `raid10` and `mirror`
+//!   segments, through their hidden image sub-volumes and laid out as
+//!   md lays them out, with images missing as far as the level survives.
+//! * `thin` segments, through the thin pool's metadata (the dm-thin
+//!   superblock and its block-map btree, in `thin`) and data
+//!   sub-volumes. A block never written reads as zeros.
 //!
-//! Every other segment type — mirror, raid*, thin, cache, snapshot,
-//! vdo — is refused by name with [`LvmError::Unsupported`]. So is a
-//! volume whose physical volumes are not all given.
+//! Every other segment type — cache, snapshot, vdo, a thin volume with
+//! an external origin — is refused by name with
+//! [`LvmError::Unsupported`]. So is a volume missing a physical volume
+//! that nothing else holds a copy of.
 //!
 //! The layouts come from LVM2's on-disk format as documented and as
 //! observed on volumes `pvcreate`, `vgcreate` and `lvcreate` made;
@@ -37,6 +44,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::BlockRead;
+
+mod thin;
 
 const SECTOR: u64 = 512;
 /// The label is in one of the first four sectors.
@@ -573,7 +582,19 @@ pub struct Segment {
     pub images: Vec<String>,
     /// A `raid*` segment's metadata sub-volumes (`<lv>_rmeta_N`), one per
     /// image, each starting with the dm-raid superblock.
+    ///
+    /// A `thin-pool` segment has one image, its data sub-volume
+    /// (`<pool>_tdata`), and one metadata sub-volume (`<pool>_tmeta`),
+    /// which starts with the dm-thin superblock.
     pub metadata: Vec<String>,
+    /// A `thin` segment's pool: the volume whose `thin-pool` segment
+    /// holds its blocks.
+    pub thin_pool: Option<String>,
+    /// A `thin` segment's device number within its pool.
+    pub device_id: Option<u64>,
+    /// A `thin` segment's external origin, read where the thin volume
+    /// has no block of its own. Such a volume is refused.
+    pub external_origin: Option<String>,
 }
 
 /// A logical volume.
@@ -696,6 +717,9 @@ impl VolumeGroup {
                                 }
                             }
                         }
+                    } else if kind == "thin-pool" {
+                        metadata.push(seg.str("metadata")?.to_string());
+                        images.push(seg.str("pool")?.to_string());
                     } else if kind == "mirror" {
                         // [mimage_0, 0, mimage_1, 0, ...]
                         let Some(Value::List(items)) = seg.get("mirrors") else {
@@ -721,6 +745,9 @@ impl VolumeGroup {
                         stripes,
                         images,
                         metadata,
+                        thin_pool: seg.str("thin_pool").ok().map(str::to_string),
+                        device_id: seg.uint("device_id").ok(),
+                        external_origin: seg.str("external_origin").ok().map(str::to_string),
                     });
                 }
                 segments.sort_by_key(|s| s.start_extent);
@@ -885,6 +912,20 @@ enum Map {
     /// `raid*` and `mirror`: the data is laid out over images, each a
     /// hidden sub-volume mapped as runs of its own.
     Raid(Box<RaidMap>),
+    /// `thin`: each block is wherever the pool's metadata says, or a hole.
+    Thin(Box<ThinMap>),
+}
+
+/// A thin volume, as its pool keeps it.
+struct ThinMap {
+    /// Pool data block size in bytes.
+    block: u64,
+    /// The pool's metadata sub-volume.
+    meta: Vec<Run>,
+    /// The pool's data sub-volume.
+    data: Vec<Run>,
+    /// The root of this volume's block map in the metadata.
+    root: u64,
 }
 
 /// A dm-raid or dm-mirror segment, as the kernel lays it out.
@@ -1011,6 +1052,12 @@ impl<R: BlockRead> Mapper<'_, R> {
                 .ok_or_else(|| LvmError::Corrupt("segment size overflows".into()))?;
             let map = match seg.kind.as_str() {
                 "striped" => self.striped(name, seg)?,
+                "thin" => self.thin(name, seg, depth)?,
+                "thin-pool" => {
+                    return Err(LvmError::Unsupported(format!(
+                        "{name} is a thin pool; the thin volumes in it are what is read"
+                    )))
+                }
                 "mirror" => {
                     let (images, gone) = self.images(seg, depth)?;
                     if !survives(1, None, &images) {
@@ -1154,6 +1201,55 @@ impl<R: BlockRead> Mapper<'_, R> {
             chunk: sb.chunk,
             data_offset: sb.data_offset,
             images,
+        })))
+    }
+
+    fn thin(&self, name: &str, seg: &Segment, depth: u32) -> Result<Map, LvmError> {
+        if let Some(origin) = &seg.external_origin {
+            return Err(LvmError::Unsupported(format!(
+                "{name}: a thin volume over the external origin {origin}"
+            )));
+        }
+        if seg.start_extent != 0 {
+            return Err(LvmError::Corrupt(format!(
+                "{name}: a thin segment that does not start the volume"
+            )));
+        }
+        let (Some(pool_name), Some(dev)) = (&seg.thin_pool, seg.device_id) else {
+            return Err(LvmError::Corrupt(format!(
+                "{name}: a thin segment without thin_pool and device_id"
+            )));
+        };
+        let pool = self.lv(pool_name)?;
+        let [pseg] = pool.segments.as_slice() else {
+            return Err(LvmError::Unsupported(format!(
+                "{pool_name}: a thin pool of {} segments",
+                pool.segments.len()
+            )));
+        };
+        let (true, [tdata], [tmeta]) = (
+            pseg.kind == "thin-pool",
+            pseg.images.as_slice(),
+            pseg.metadata.as_slice(),
+        ) else {
+            return Err(LvmError::Corrupt(format!(
+                "{name}: its thin_pool {pool_name} is not a thin pool"
+            )));
+        };
+        let (meta, _) = self.map(tmeta, depth + 1)?;
+        let (data, _) = self.map(tdata, depth + 1)?;
+        let read = |at: u64, b: &mut [u8]| read_runs(self.devices, &meta, at, b);
+        let sb = thin::superblock(&read)?;
+        let root = thin::device_root(&read, &sb, dev)?.ok_or_else(|| {
+            LvmError::Corrupt(format!(
+                "{name}: thin device {dev} is not in {pool_name}'s metadata"
+            ))
+        })?;
+        Ok(Map::Thin(Box::new(ThinMap {
+            block: sb.data_block_size,
+            meta,
+            data,
+            root,
         })))
     }
 
@@ -1303,10 +1399,39 @@ fn read_runs<R: BlockRead>(
                     take
                 }
             }
+            Map::Thin(thin) => read_thin(devices, thin, within, &mut buf[done..done + want])?,
         };
         done += take;
     }
     Ok(())
+}
+
+/// Read a thin volume's bytes from `within` up to the end of its block,
+/// or of `buf`, whichever is nearer; returns how many were read.
+fn read_thin<R: BlockRead>(
+    devices: &[R],
+    thin: &ThinMap,
+    within: u64,
+    buf: &mut [u8],
+) -> fs_core::Result<usize> {
+    let inner = within % thin.block;
+    let take = ((thin.block - inner) as usize).min(buf.len());
+    let read = |at: u64, b: &mut [u8]| read_runs(devices, &thin.meta, at, b);
+    let mapped = thin::data_block(&read, thin.root, within / thin.block).map_err(|e| match e {
+        LvmError::Block(e) => e,
+        e => fs_core::Error::Custom(e.to_string()),
+    })?;
+    match mapped {
+        Some(db) => {
+            let at = db
+                .checked_mul(thin.block)
+                .and_then(|a| a.checked_add(inner))
+                .ok_or_else(|| fs_core::Error::Custom(format!("thin data block {db} overflows")))?;
+            read_runs(devices, &thin.data, at, &mut buf[..take])?;
+        }
+        None => buf[..take].fill(0),
+    }
+    Ok(take)
 }
 
 /// A logical volume, read through its physical volumes.
@@ -1340,7 +1465,9 @@ impl<R: BlockRead> LogicalVolume<R> {
     /// missing member: from another copy, or rebuilt from parity. A
     /// volume missing more images than its level survives, and one whose
     /// unmirrored segments lie on a missing PV, is refused with the PV
-    /// named. Other segment types are refused by name.
+    /// named. `thin` segments are read through their pool's dm-thin
+    /// metadata and data sub-volumes, a block never written reading as
+    /// zeros. Other segment types are refused by name.
     pub fn open(devices: Vec<R>, name: &str) -> Result<Self, LvmError> {
         let vg = read_volume_group(&devices)?;
         // PV key -> device index, by matching the label UUID.

@@ -45,8 +45,10 @@ It does **not** mount anything, decode files, or write — it's a probe.
       `raid5`, `raid6`, `raid10` (near layout) and `mirror` segments
       through their hidden image sub-volumes, and with images missing as
       far as each level survives: read from another copy or rebuilt from
-      parity.
-      Other segment types (thin, cache, snapshot, vdo) are refused by name
+      parity. Thin volumes and thin snapshots read through their pool's
+      dm-thin metadata, holes as zeros. Other segment types (cache,
+      snapshot, vdo, a thin volume with an external origin) are refused
+      by name
 - [x] Discovery: `md::scan` sorts a set of devices into the arrays they
       are members of, `lvm::scan` sorts PVs (raw devices, slices or
       assembled arrays) into their volume groups, and `container::detect`
