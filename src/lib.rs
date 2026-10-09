@@ -103,6 +103,7 @@ pub mod gpt_layout {
 pub const MBR_LBA_MAX: u64 = 0xFFFF_FFFF;
 
 pub mod capi;
+pub mod container;
 pub mod error;
 pub mod gpt;
 pub mod gpt_write;

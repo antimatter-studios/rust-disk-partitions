@@ -679,6 +679,47 @@ impl<R: BlockRead> fmt::Debug for MdArray<R> {
     }
 }
 
+/// Devices sorted by the `md` array each is a member of: what [`scan`]
+/// returns.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct MdScan<R> {
+    /// One entry per array found, in the order its first member was given.
+    pub arrays: Vec<MdGroup<R>>,
+    /// Devices that carry no `md` superblock.
+    pub others: Vec<R>,
+    /// Devices whose superblock is there but could not be read, with why.
+    pub refused: Vec<(R, MdError)>,
+}
+
+/// The members of one array that [`scan`] found.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct MdGroup<R> {
+    /// The UUID every member carries.
+    pub array_uuid: [u8; 16],
+    /// The newest superblock among the members, which speaks for the array.
+    pub superblock: MdSuperblock,
+    /// Every member, in the order given.
+    pub members: Vec<R>,
+}
+
+impl<R: BlockRead> MdGroup<R> {
+    /// Assemble the array from its members.
+    pub fn assemble(self) -> Result<MdArray<R>, MdError> {
+        MdArray::assemble(self.members)
+    }
+}
+
+/// Sort `devices` into the arrays they are members of.
+pub fn scan<R: BlockRead>(devices: Vec<R>) -> MdScan<R> {
+    MdScan {
+        arrays: Vec::new(),
+        others: devices,
+        refused: Vec::new(),
+    }
+}
+
 impl<R: BlockRead> MdArray<R> {
     /// Assemble an array from its member devices, in any order.
     ///
@@ -1099,7 +1140,7 @@ pub(crate) mod tests {
     //! `tests/oracle_md.rs`'s question, not this module's.
     use super::*;
 
-    struct Mem(Vec<u8>);
+    pub(crate) struct Mem(pub(crate) Vec<u8>);
     impl BlockRead for Mem {
         fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
             let o = offset as usize;
@@ -1540,5 +1581,76 @@ pub(crate) mod tests {
                 Err(MdError::Unsupported(_))
             ));
         }
+    }
+
+    /// A RAID1 member in `slot` of array `uuid_byte`, at event `events`.
+    pub(crate) fn raid1_member(uuid_byte: u8, slot: u16, events: u64, fill: u8) -> Mem {
+        let mut m = vec![0u8; MEMBER];
+        let mut sb = sb_v12(1, 0, 2, slot, events);
+        sb[16..32].copy_from_slice(&[uuid_byte; 16]);
+        let c = v1_checksum(&sb[..260]);
+        sb[216..220].copy_from_slice(&c.to_le_bytes());
+        m[4096..8192].copy_from_slice(&sb);
+        m[DATA_OFFSET as usize..].fill(fill);
+        Mem(m)
+    }
+
+    #[test]
+    fn a_scan_sorts_devices_into_their_arrays() {
+        let devices = vec![
+            raid1_member(1, 0, 5, 0x11),
+            Mem(vec![0u8; MEMBER]),
+            raid1_member(2, 1, 9, 0x22),
+            raid1_member(1, 1, 5, 0x11),
+            raid1_member(2, 0, 9, 0x22),
+        ];
+        let found = scan(devices);
+        assert_eq!(found.arrays.len(), 2, "two arrays");
+        assert_eq!(found.others.len(), 1, "the blank device is not a member");
+        assert!(found.refused.is_empty());
+        // In the order each array's first member was given.
+        assert_eq!(found.arrays[0].array_uuid, [1; 16]);
+        assert_eq!(found.arrays[1].array_uuid, [2; 16]);
+        assert_eq!(found.arrays[1].superblock.events, 9);
+        for (group, fill) in found.arrays.into_iter().zip([0x11u8, 0x22]) {
+            assert_eq!(group.members.len(), 2);
+            let a = group.assemble().expect("each group assembles");
+            let mut b = [0u8; 4];
+            a.read_at(0, &mut b).unwrap();
+            assert_eq!(b, [fill; 4]);
+        }
+    }
+
+    #[test]
+    fn a_stale_member_is_grouped_and_set_aside_at_assembly() {
+        // Slot 1 missed the last write: its event count is behind, and
+        // its data is old.
+        let found = scan(vec![
+            raid1_member(1, 1, 4, 0xEE),
+            raid1_member(1, 0, 5, 0x11),
+        ]);
+        assert_eq!(found.arrays.len(), 1);
+        let group = found.arrays.into_iter().next().unwrap();
+        assert_eq!(group.members.len(), 2, "a stale member is still a member");
+        assert_eq!(group.superblock.events, 5, "the newest superblock speaks");
+        let a = group.assemble().unwrap();
+        assert!(a.is_degraded(), "the stale member is not read");
+        let mut b = [0u8; 4];
+        a.read_at(0, &mut b).unwrap();
+        assert_eq!(
+            b, [0x11; 4],
+            "the current member's data, not the stale one's"
+        );
+    }
+
+    #[test]
+    fn a_damaged_superblock_is_refused_by_name_not_dropped() {
+        let mut bad = raid1_member(1, 0, 5, 0);
+        bad.0[4096 + 72] ^= 1;
+        let found = scan(vec![bad, raid1_member(1, 1, 5, 0)]);
+        assert_eq!(found.arrays.len(), 1);
+        assert_eq!(found.arrays[0].members.len(), 1);
+        assert_eq!(found.refused.len(), 1);
+        assert!(matches!(found.refused[0].1, MdError::BadChecksum { .. }));
     }
 }
