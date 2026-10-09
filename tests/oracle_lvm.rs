@@ -446,3 +446,37 @@ fn raid_and_mirror_volumes_read_the_kernels_bytes() {
         );
     }
 }
+
+/// The same volumes with PVs left out, as when a disk has failed: lvm2
+/// put each image of a volume on its own PV, so one PV gone takes at most
+/// one image of each, which every one of them survives, and any two gone
+/// leave raid6 its data through P and Q. Chunks on a missing image are
+/// rebuilt from the rest of their row, or read from the other copy, and
+/// must still be the kernel's bytes.
+#[test]
+fn raid_and_mirror_volumes_missing_images_read_the_kernels_bytes() {
+    let dir = oracle_dir().join("raid");
+    let without = |gone: &[usize]| -> Vec<FileBlock> {
+        pvs(&dir, 5)
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !gone.contains(i))
+            .map(|(_, d)| d)
+            .collect()
+    };
+    let mut cases = Vec::new();
+    for gone in 0..5 {
+        for lv in ["r1", "r5", "r6", "r10", "m1"] {
+            cases.push((vec![gone], lv));
+        }
+        for other in gone + 1..5 {
+            cases.push((vec![gone, other], "r6"));
+        }
+    }
+    for (gone, lv) in cases {
+        let what = format!("raid/{lv} without pv-{gone:?}");
+        let opened = LogicalVolume::open(without(&gone), lv);
+        let lv_reader = opened.unwrap_or_else(|e| panic!("{what}: {e}"));
+        same(&what, &lv_reader, &dir.join(format!("{lv}.bin")));
+    }
+}

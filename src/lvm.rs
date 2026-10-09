@@ -2087,4 +2087,94 @@ pool = "pool_tdata"
             }
         }
     }
+    /// raid1 and mirror volumes with one image's PV missing read the
+    /// other image, whichever is gone.
+    #[test]
+    fn raid1_and_mirror_segments_read_whichever_image_is_present() {
+        let data = pattern(4 * EXT, 37);
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 4\ntype = \"raid1\"\n\
+             device_count = 2\nraids = [\"r_rmeta_0\", \"r_rimage_0\", \"r_rmeta_1\", \"r_rimage_1\"]\n}}\n}}\n\
+             m {{\nid = \"m\"\nsegment1 {{\nstart_extent = 0\nextent_count = 4\ntype = \"mirror\"\n\
+             mirror_count = 2\nmirrors = [\"m_mimage_0\", 0, \"m_mimage_1\", 0]\n}}\n}}\n{}{}{}{}{}{}",
+            sub_lv("r_rmeta_0", "pv0", 10, 1),
+            sub_lv("r_rimage_0", "pv0", 11, 5),
+            sub_lv("r_rmeta_1", "pv1", 10, 1),
+            sub_lv("r_rimage_1", "pv1", 11, 5),
+            sub_lv("m_mimage_0", "pv0", 20, 4),
+            sub_lv("m_mimage_1", "pv1", 20, 4),
+        );
+        let text = vg_text(5, &lvs);
+        let mut pv0 = pv_image(&uuid(0), &text, MDA_HEADER_SIZE);
+        let mut pv1 = pv_image(&uuid(1), &text, MDA_HEADER_SIZE);
+        let off = 16 * SECTOR as usize;
+        for pv in [&mut pv0, &mut pv1] {
+            pv[at(10)..at(10) + SECTOR as usize].copy_from_slice(&dm_raid_sb(1, 0, 16, 16));
+            pv[at(11) + off..at(11) + off + data.len()].copy_from_slice(&data);
+            pv[at(20)..at(20) + data.len()].copy_from_slice(&data);
+        }
+        for (left, pv) in [("pv0", &pv0), ("pv1", &pv1)] {
+            for name in ["r", "m"] {
+                let lv = LogicalVolume::open(vec![Mem(pv.clone())], name)
+                    .unwrap_or_else(|e| panic!("{name} on {left} alone: {e}"));
+                assert_eq!(read_all(&lv), data, "{name} on {left} alone");
+            }
+        }
+    }
+
+    /// raid5 over three images, two on pv0 and one on pv1, with parity
+    /// written as md places it. Without pv1 one image is gone, and its
+    /// chunks are rebuilt from the rest of their row; without pv0 two are
+    /// gone, which raid5 cannot survive, and the PV is named as missing.
+    #[test]
+    fn a_raid5_segment_missing_one_image_rebuilds_it_and_missing_two_is_refused() {
+        let chunk = 16 * SECTOR;
+        let data = pattern(4 * EXT, 41);
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 4\ntype = \"raid5_ls\"\n\
+             device_count = 3\nstripe_size = 16\nraids = [\"r_rmeta_0\", \"r_rimage_0\", \"r_rmeta_1\", \
+             \"r_rimage_1\", \"r_rmeta_2\", \"r_rimage_2\"]\n}}\n}}\n{}{}{}{}{}{}",
+            sub_lv("r_rmeta_0", "pv0", 30, 1),
+            sub_lv("r_rimage_0", "pv0", 31, 2),
+            sub_lv("r_rmeta_1", "pv1", 30, 1),
+            sub_lv("r_rimage_1", "pv1", 31, 2),
+            sub_lv("r_rmeta_2", "pv0", 34, 1),
+            sub_lv("r_rimage_2", "pv0", 35, 2),
+        );
+        let text = vg_text(5, &lvs);
+        let mut pvs = [
+            pv_image(&uuid(0), &text, MDA_HEADER_SIZE),
+            pv_image(&uuid(1), &text, MDA_HEADER_SIZE),
+        ];
+        let images = [(0usize, 31u64), (1, 31), (0, 35)];
+        for (pv, meta) in [(0usize, 30u64), (1, 30), (0, 34)] {
+            pvs[pv][at(meta)..at(meta) + SECTOR as usize].copy_from_slice(&dm_raid_sb(5, 2, 16, 0));
+        }
+        let c = chunk as usize;
+        for (row, pair) in data.chunks(2 * c).enumerate() {
+            let stripe = row as u64;
+            let mut parity = vec![0u8; c];
+            for (i, src) in pair.chunks(c).enumerate() {
+                let (dd, pd, _) = crate::md::parity_map(5, 2, 3, stripe, i as u64);
+                let (pv, first) = images[dd];
+                let o = at(first) + (stripe * chunk) as usize;
+                pvs[pv][o..o + c].copy_from_slice(src);
+                for (p, b) in parity.iter_mut().zip(src) {
+                    *p ^= b;
+                }
+                let (pv, first) = images[pd];
+                let o = at(first) + (stripe * chunk) as usize;
+                pvs[pv][o..o + c].copy_from_slice(&parity);
+            }
+        }
+        let lv = LogicalVolume::open(vec![Mem(pvs[0].clone())], "r").unwrap();
+        assert_eq!(read_all(&lv), data);
+        let mut part = vec![0u8; 3 * c + 7];
+        lv.read_at(chunk - 3, &mut part).unwrap();
+        assert_eq!(part[..], data[c - 3..][..part.len()]);
+        assert!(matches!(
+            LogicalVolume::open(vec![Mem(pvs[1].clone())], "r"),
+            Err(LvmError::MissingPv(_))
+        ));
+    }
 }
