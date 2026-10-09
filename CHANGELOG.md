@@ -6,6 +6,11 @@ never does.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-09
+
+Everything here adds to the public surface; nothing a consumer already builds
+with changed, so the minor stays.
+
 ### Added
 
 - **LVM volumes with `raid1`, `raid4`, `raid5`, `raid6` and `mirror` segments
@@ -625,7 +630,8 @@ this release.
 
 - Initial release: MBR and GPT partition-table probing.
 
-[Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.4.1...v0.5.0
