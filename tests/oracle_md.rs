@@ -78,8 +78,8 @@ fn cases() -> Vec<Case> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     assert!(
-        out.len() >= 23,
-        "only {} md oracle cases found; the script builds 23",
+        out.len() >= 37,
+        "only {} md oracle cases found; the script builds 37",
         out.len()
     );
     out
@@ -211,7 +211,7 @@ fn every_v1_superblock_agrees_with_mdadm_examine() {
             checked += 1;
         }
     }
-    assert!(checked >= 30, "only {checked} 1.x members checked");
+    assert!(checked >= 85, "only {checked} 1.x members checked");
     println!("md oracle: {checked} superblocks agree with mdadm --examine");
 }
 

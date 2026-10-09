@@ -110,3 +110,15 @@ make_case raid10-f2-odd-v1.2 10 3 1.2 --chunk=32 --layout=f2
 make_case raid10-o2-v1.2 10 3 1.2 --chunk=64 --layout=o2
 make_case raid10-n3-v1.2 10 4 1.2 --chunk=64 --layout=n3
 SIZES="40 16 24" make_case raid0-zones-v1.2 0 3 1.2 --chunk=64 --layout=alternate
+SIZES="40 16 24" make_case raid0-zones-orig-v1.2 0 3 1.2 --chunk=64 --layout=original
+# Every other RAID6 layout, on four members: the rotations, P and Q
+# first or last, the three DDF layouts (Q's coefficients by member), and
+# the -6 layouts (a RAID5 layout with Q on the last member). 8 MiB members
+# still give each a hundred rows, so every rotation repeats many times,
+# while the oracle's eleven reads of each (whole, and without each member
+# and each pair) stay small.
+for layout in left-asymmetric right-asymmetric right-symmetric parity-first parity-last \
+    ddf-zero-restart ddf-N-restart ddf-N-continue \
+    left-asymmetric-6 right-asymmetric-6 left-symmetric-6 right-symmetric-6 parity-first-6; do
+    SIZES="8 8 8 8" make_case "raid6-$layout-v1.2" 6 4 1.2 --chunk=64 --layout="$layout"
+done
