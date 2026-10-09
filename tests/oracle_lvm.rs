@@ -422,3 +422,26 @@ fn a_second_metadata_copy_is_read_when_the_first_is_damaged() {
     let lv = LogicalVolume::open(damaged, "m").unwrap();
     same("two-mdas/m, first copies damaged", &lv, &dir.join("m.bin"));
 }
+
+/// Volumes whose segments are dm-raid (`raid1`, `raid5`, `raid6`) and
+/// dm-mirror (`mirror`) rather than `striped`: each image is a hidden
+/// sub-volume, and the kernel lays the data out over them as md does
+/// (#166). Every byte is the kernel's.
+#[test]
+fn raid_and_mirror_volumes_read_the_kernels_bytes() {
+    let dir = oracle_dir().join("raid");
+    // On a failure, what lvm2 and the kernel built is the first thing
+    // to look at.
+    let table = fs::read_to_string(dir.join("dm.table")).unwrap_or_default();
+    for lv in ["r1", "r5", "r6", "m1"] {
+        let opened = LogicalVolume::open(pvs(&dir, 5), lv);
+        let lv_reader = opened.unwrap_or_else(|e| {
+            panic!("raid/{lv}: {e}\nthe kernel's device-mapper tables:\n{table}")
+        });
+        same(
+            &format!("raid/{lv}"),
+            &lv_reader,
+            &dir.join(format!("{lv}.bin")),
+        );
+    }
+}

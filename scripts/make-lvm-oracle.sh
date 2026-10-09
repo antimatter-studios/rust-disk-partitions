@@ -15,6 +15,10 @@
 #              one VG over both arrays with vgshr/lv spanning them
 #   two-mdas/  two PVs made with `--pvmetadatacopies 2`, so each keeps a
 #              second copy of the metadata at its end; one LV across both
+#   raid/      five PVs holding LVs whose segments are dm-raid and
+#              dm-mirror rather than striped: r1 (raid1, two images), r5
+#              (raid5, two data stripes), r6 (raid6, three data stripes)
+#              and m1 (mirror, two images, core log)
 #
 # Each case holds the member images (`pv-<n>.img` or `disk-<n>.img`),
 # and `<name>.bin` for each volume: every byte the kernel's device returned
@@ -32,7 +36,7 @@ for t in mdadm pvcreate sfdisk; do
 done
 # Named here so a missing one says which, rather than surfacing as a
 # create error further down.
-modprobe -a raid1 raid456 dm_mod || { echo "cannot load raid1, raid456 or dm_mod; this script does not skip" >&2; exit 1; }
+modprobe -a raid1 raid456 dm_mod dm_raid dm_mirror || { echo "cannot load raid1, raid456, dm_mod, dm_raid or dm_mirror; this script does not skip" >&2; exit 1; }
 
 # Only the devices this script made: a host's own PVs are never touched,
 # and no devices file decides what is visible.
@@ -182,6 +186,44 @@ vgs+=(oracle-two-mdas)
 lvcreate "${LVM[@]}" -q -y -l 100%FREE -n m oracle-two-mdas
 fill /dev/oracle-two-mdas/m m "$d"
 finish oracle-two-mdas
+
+# --- raid: dm-raid and dm-mirror segments --------------------------------
+d="$out/raid"
+mkdir -p "$d"
+pvs=()
+for n in 0 1 2 3 4; do
+    truncate -s 24M "$d/pv-$n.img"
+    pvs+=("$(attach "$d/pv-$n.img")")
+done
+pvcreate "${LVM[@]}" -q "${pvs[@]}"
+vgcreate "${LVM[@]}" -q -s 1M oracle-raid "${pvs[@]}"
+vgs+=(oracle-raid)
+lvcreate "${LVM[@]}" -q -y --type raid1 -m 1 -L 8M -n r1 oracle-raid
+lvcreate "${LVM[@]}" -q -y --type raid5 -i 2 -L 8M -n r5 oracle-raid
+lvcreate "${LVM[@]}" -q -y --type raid6 -i 3 -L 12M -n r6 oracle-raid
+lvcreate "${LVM[@]}" -q -y --type mirror -m 1 --mirrorlog core -L 8M -n m1 oracle-raid
+# synced LV: wait until the kernel reports every copy and parity in step,
+# so what is read back is what the kernel keeps on every member.
+synced() {
+    local lv="$1" i pct
+    for i in $(seq 1 120); do
+        pct="$(lvs "${LVM[@]}" --noheadings -o sync_percent "oracle-raid/$lv" | tr -d ' ')"
+        [ "$pct" = "100.00" ] && return 0
+        sleep 1
+    done
+    echo "oracle-raid/$lv did not finish syncing ($pct%); this script does not skip" >&2
+    exit 1
+}
+for lv in r1 r5 r6 m1; do
+    synced "$lv"
+    fill "/dev/oracle-raid/$lv" "$lv" "$d"
+    synced "$lv"
+done
+# What the kernel was told: the metadata lvm2 wrote, and each device-mapper
+# table, whose dm-raid lines carry the level, layout, chunk and data offset.
+vgcfgbackup "${LVM[@]}" -q -f "$d/vg.txt" oracle-raid
+dmsetup table | grep '^oracle--raid-' > "$d/dm.table"
+finish oracle-raid
 
 for l in "${loops[@]}"; do losetup -d "$l"; done
 loops=()
