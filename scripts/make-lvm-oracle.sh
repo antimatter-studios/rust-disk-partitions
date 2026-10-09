@@ -20,6 +20,9 @@
 #              (raid5, two data stripes), r6 (raid6, three data stripes),
 #              r10 (raid10, two stripes of two near copies) and m1
 #              (mirror, two images, core log)
+#   thin/      two PVs holding a thin pool (64 KiB blocks) and t, a thin
+#              volume written in places and left with holes, and snap, a
+#              thin snapshot of t taken before t was written again
 #
 # Each case holds the member images (`pv-<n>.img` or `disk-<n>.img`),
 # and `<name>.bin` for each volume: every byte the kernel's device returned
@@ -37,7 +40,7 @@ for t in mdadm pvcreate sfdisk; do
 done
 # Named here so a missing one says which, rather than surfacing as a
 # create error further down.
-modprobe -a raid1 raid456 raid10 dm_mod dm_raid dm_mirror || { echo "cannot load raid1, raid456, raid10, dm_mod, dm_raid or dm_mirror; this script does not skip" >&2; exit 1; }
+modprobe -a raid1 raid456 raid10 dm_mod dm_raid dm_mirror dm_thin_pool || { echo "cannot load raid1, raid456, raid10, dm_mod, dm_raid, dm_mirror or dm_thin_pool; this script does not skip" >&2; exit 1; }
 
 # Only the devices this script made: a host's own PVs are never touched,
 # and no devices file decides what is visible.
@@ -226,6 +229,42 @@ done
 vgcfgbackup "${LVM[@]}" -q -f "$d/vg.txt" oracle-raid
 dmsetup table | grep '^oracle--raid-' > "$d/dm.table"
 finish oracle-raid
+
+# --- thin: a thin pool, a thin volume with holes, and a snapshot of it ---
+# Only some 64 KiB blocks of t are ever written, so the rest are holes
+# the kernel reads as zeros. snap is taken part way, then t is written
+# again: snap keeps the blocks they shared before, t gets new ones.
+d="$out/thin"
+mkdir -p "$d"
+pvs=()
+for n in 0 1; do
+    truncate -s 32M "$d/pv-$n.img"
+    pvs+=("$(attach "$d/pv-$n.img")")
+done
+pvcreate "${LVM[@]}" -q "${pvs[@]}"
+vgcreate "${LVM[@]}" -q -s 1M oracle-thin "${pvs[@]}"
+vgs+=(oracle-thin)
+lvcreate "${LVM[@]}" -q -y --type thin-pool --chunksize 64k -L 16M -n pool oracle-thin
+lvcreate "${LVM[@]}" -q -y -V 24M -T oracle-thin/pool -n t
+put() {
+    dd if=/dev/urandom of=/dev/oracle-thin/t bs=64K seek="$1" count="$2" iflag=fullblock oflag=direct status=none
+}
+put 0 16
+put 100 8
+put 300 4
+sync
+lvcreate "${LVM[@]}" -q -y -s -n snap oracle-thin/t
+lvchange "${LVM[@]}" -q -ay -K oracle-thin/snap
+put 8 4
+put 200 2
+sync
+for lv in t snap; do
+    dd if="/dev/oracle-thin/$lv" of="$d/$lv.bin" bs=64K iflag=direct status=none
+    echo "lvm oracle: thin/$lv ($(blockdev --getsize64 "/dev/oracle-thin/$lv") bytes)"
+done
+vgcfgbackup "${LVM[@]}" -q -f "$d/vg.txt" oracle-thin
+dmsetup table | grep '^oracle--thin-' > "$d/dm.table"
+finish oracle-thin
 
 for l in "${loops[@]}"; do losetup -d "$l"; done
 loops=()

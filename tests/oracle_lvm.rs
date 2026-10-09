@@ -491,3 +491,23 @@ fn raid_and_mirror_volumes_missing_images_read_the_kernels_bytes() {
         "lvm oracle: {count} raid and mirror reads with PVs left out match the kernel ({bytes} bytes)"
     );
 }
+
+/// Thin volumes: `t` was written in places and left with holes, and
+/// `snap` was taken part way and kept the blocks the two shared before
+/// `t` was written again. Every byte, holes included, is the kernel's.
+#[test]
+fn thin_volumes_and_a_thin_snapshot_read_the_kernels_bytes() {
+    let dir = oracle_dir().join("thin");
+    let table = fs::read_to_string(dir.join("dm.table")).unwrap_or_default();
+    for lv in ["t", "snap"] {
+        let opened = LogicalVolume::open(pvs(&dir, 2), lv);
+        let lv_reader = opened.unwrap_or_else(|e| {
+            panic!("thin/{lv}: {e}\nthe kernel's device-mapper tables:\n{table}")
+        });
+        same(
+            &format!("thin/{lv}"),
+            &lv_reader,
+            &dir.join(format!("{lv}.bin")),
+        );
+    }
+}
