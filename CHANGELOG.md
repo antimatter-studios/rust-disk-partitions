@@ -21,6 +21,12 @@ never does.
   longer has to know which partitions belong together. `container::detect`
   names an `md` member or an LVM2 PV, which `sniff` reports as `Unknown`;
   it is a separate probe so that `FsKind` keeps its variants.
+- **Every RAID6 layout and multi-zone RAID0 in the original layout are read
+  (#165).** RAID6 was read in left-symmetric only; the other rotations,
+  parity-first and -last, the DDF layouts and the `-6` layouts are read now,
+  with Q's coefficients numbered the way the kernel numbers them. A multi-zone
+  RAID0 recording the original layout was refused and is read. Each is checked
+  byte for byte against an array `mdadm` built, with members missing.
 - **Linux software RAID members can be read as the array they belong to.**
   `md::read_superblock` decodes 0.90, 1.0, 1.1 and 1.2 superblocks, and
   `md::MdArray::assemble` turns the members into one `BlockRead` over the

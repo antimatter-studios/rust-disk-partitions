@@ -105,21 +105,13 @@ const LAYOUT_PARITY_LAST: u32 = 5;
 /// RAID6 only. The three DDF layouts order Q's coefficients by member
 /// rather than by data chunk, and the `_6` layouts are a RAID5 layout over
 /// all but the last member, with Q on the last.
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_ROTATING_ZERO_RESTART: u32 = 8;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_ROTATING_N_RESTART: u32 = 9;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_ROTATING_N_CONTINUE: u32 = 10;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_LEFT_ASYMMETRIC_6: u32 = 16;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_RIGHT_ASYMMETRIC_6: u32 = 17;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_LEFT_SYMMETRIC_6: u32 = 18;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_RIGHT_SYMMETRIC_6: u32 = 19;
-#[allow(dead_code)] // read in the next commit
 const LAYOUT_PARITY_FIRST_6: u32 = 20;
 
 /// Which metadata format a member carries.
@@ -518,11 +510,7 @@ fn parity_map(
     i: u64,
 ) -> (usize, usize, Option<usize>) {
     if level == LEVEL_RAID6 {
-        // Left-symmetric: P rotates leftwards from the last member, Q
-        // follows it, and data starts after Q.
-        let pd = n - 1 - stripe % n;
-        let qd = (pd + 1) % n;
-        let dd = (pd + 2 + i) % n;
+        let (dd, pd, qd) = raid6_map(layout, n, stripe, i);
         return (dd as usize, pd as usize, Some(qd as usize));
     }
     let data = n - 1;
@@ -550,11 +538,96 @@ fn parity_map(
     (dd as usize, pd as usize, None)
 }
 
+/// The RAID6 layouts [`raid6_map`] places.
+fn raid6_layout_known(layout: u32) -> bool {
+    matches!(
+        layout,
+        LAYOUT_LEFT_ASYMMETRIC..=LAYOUT_PARITY_LAST
+            | LAYOUT_ROTATING_ZERO_RESTART..=LAYOUT_ROTATING_N_CONTINUE
+            | LAYOUT_LEFT_ASYMMETRIC_6..=LAYOUT_PARITY_FIRST_6
+    )
+}
+
+/// Members holding logical data chunk `i`, P and Q of RAID6 row `stripe`
+/// over `n` members: the kernel's `raid5_compute_sector`, case 6.
+fn raid6_map(layout: u32, n: u64, stripe: u64, i: u64) -> (u64, u64, u64) {
+    let data = n - 2;
+    // P at `pd`, Q after it -- or on member 0 when P is last -- and data
+    // in member order around them: "Q D D D P", "D D P Q D".
+    let asymmetric = |pd: u64| {
+        if pd == n - 1 {
+            (i + 1, pd, 0)
+        } else if i >= pd {
+            (i + 2, pd, pd + 1)
+        } else {
+            (i, pd, pd + 1)
+        }
+    };
+    match layout {
+        LAYOUT_LEFT_ASYMMETRIC => asymmetric(n - 1 - stripe % n),
+        // The same rows as left-asymmetric, one stripe on: "D D D P Q"
+        // first rather than "Q D D D P".
+        LAYOUT_ROTATING_N_RESTART => asymmetric(n - 1 - (stripe + 1) % n),
+        LAYOUT_RIGHT_ASYMMETRIC | LAYOUT_ROTATING_ZERO_RESTART => asymmetric(stripe % n),
+        LAYOUT_LEFT_SYMMETRIC => {
+            let pd = n - 1 - stripe % n;
+            ((pd + 2 + i) % n, pd, (pd + 1) % n)
+        }
+        LAYOUT_RIGHT_SYMMETRIC => {
+            let pd = stripe % n;
+            ((pd + 2 + i) % n, pd, (pd + 1) % n)
+        }
+        LAYOUT_PARITY_FIRST => (i + 2, 0, 1),
+        LAYOUT_PARITY_LAST => (i, data, data + 1),
+        // Left-symmetric with Q before P.
+        LAYOUT_ROTATING_N_CONTINUE => {
+            let pd = n - 1 - stripe % n;
+            ((pd + 1 + i) % n, pd, (pd + n - 1) % n)
+        }
+        // A RAID5 layout over the first n - 1 members; Q on the last.
+        LAYOUT_LEFT_ASYMMETRIC_6 | LAYOUT_RIGHT_ASYMMETRIC_6 => {
+            let pd = if layout == LAYOUT_LEFT_ASYMMETRIC_6 {
+                data - stripe % (n - 1)
+            } else {
+                stripe % (n - 1)
+            };
+            (if i >= pd { i + 1 } else { i }, pd, n - 1)
+        }
+        LAYOUT_LEFT_SYMMETRIC_6 | LAYOUT_RIGHT_SYMMETRIC_6 => {
+            let pd = if layout == LAYOUT_LEFT_SYMMETRIC_6 {
+                data - stripe % (n - 1)
+            } else {
+                stripe % (n - 1)
+            };
+            ((pd + 1 + i) % (n - 1), pd, n - 1)
+        }
+        LAYOUT_PARITY_FIRST_6 => (i + 1, 0, n - 1),
+        other => unreachable!("RAID6 layout {other} is refused at assembly"),
+    }
+}
+
 /// The power of `{02}` that multiplies logical data chunk `i` of RAID6
-/// row `stripe` in Q.
-#[allow(dead_code)] // read in the next commit
-fn q_exponent(_layout: u32, _n: u64, _stripe: u64, i: u64) -> i64 {
-    i as i64
+/// row `stripe` in Q: its slot in the kernel's `set_syndrome_sources`.
+///
+/// Outside the DDF layouts, data members are numbered in member order,
+/// starting at the member after Q (`raid6_d0`, member 0 when Q is last)
+/// and skipping P and Q. In the DDF layouts every member counts from
+/// member 0, P and Q included, so a data chunk's number is its member's.
+fn q_exponent(layout: u32, n: u64, stripe: u64, i: u64) -> i64 {
+    let (dd, pd, qd) = raid6_map(layout, n, stripe, i);
+    if (LAYOUT_ROTATING_ZERO_RESTART..=LAYOUT_ROTATING_N_CONTINUE).contains(&layout) {
+        return dd as i64;
+    }
+    let d0 = if qd == n - 1 { 0 } else { qd + 1 };
+    let mut slot = 0;
+    let mut m = d0;
+    while m != dd {
+        if m != pd && m != qd {
+            slot += 1;
+        }
+        m = (m + 1) % n;
+    }
+    slot
 }
 
 /// GF(2^8) over `x^8 + x^4 + x^3 + x^2 + 1`: `EXP[i]` is `{02}^i`, and
@@ -878,16 +951,17 @@ impl<R: BlockRead> MdArray<R> {
                 zones = raid0_zones(&sizes);
                 // Which member a chunk of a later zone is on has been
                 // computed two ways over the kernel's history, and the
-                // superblock records which. Only one is read here; the
-                // other, or neither recorded, is refused rather than
-                // guessed.
-                if zones.len() > 1 && lead.layout != RAID0_LAYOUT_ALTERNATE {
-                    return Err(MdError::Unsupported(match lead.layout {
-                        RAID0_LAYOUT_ORIGINAL => {
-                            "multi-zone RAID0 in the original layout".to_string()
-                        }
-                        l => format!("multi-zone RAID0 with layout {l}"),
-                    }));
+                // superblock records which. Both are read; an array that
+                // records neither is refused rather than guessed, as the
+                // kernel refuses it.
+                if zones.len() > 1
+                    && lead.layout != RAID0_LAYOUT_ALTERNATE
+                    && lead.layout != RAID0_LAYOUT_ORIGINAL
+                {
+                    return Err(MdError::Unsupported(format!(
+                        "multi-zone RAID0 with layout {}",
+                        lead.layout
+                    )));
                 }
                 zones.iter().map(|z| z.len).sum()
             }
@@ -936,7 +1010,7 @@ impl<R: BlockRead> MdArray<R> {
                 if n <= parity {
                     return Err(corrupt(0, format!("RAID{level} with {n} members")));
                 }
-                if level == LEVEL_RAID6 && lead.layout != LAYOUT_LEFT_SYMMETRIC {
+                if level == LEVEL_RAID6 && !raid6_layout_known(lead.layout) {
                     return Err(MdError::Unsupported(format!(
                         "RAID6 layout {}",
                         lead.layout
@@ -1032,7 +1106,16 @@ impl<R: BlockRead> MdArray<R> {
         let (c, inner) = (within / self.chunk, within % self.chunk);
         let take = ((self.chunk - inner) as usize).min(buf.len());
         let off = z.dev_start + (c / k) * self.chunk + inner;
-        self.read_member(z.slots[(c % k) as usize], off, &mut buf[..take])?;
+        // The member is picked by the chunk's number within its zone, or,
+        // in the original layout, within the whole array: the kernel's
+        // `map_sector` is handed `orig_sector` there. The two agree in the
+        // first zone, which starts at 0.
+        let pick = if self.layout == RAID0_LAYOUT_ORIGINAL {
+            pos / self.chunk
+        } else {
+            c
+        };
+        self.read_member(z.slots[(pick % k) as usize], off, &mut buf[..take])?;
         Ok(take)
     }
 
@@ -1111,7 +1194,7 @@ impl<R: BlockRead> MdArray<R> {
                 missing.push(i);
                 continue;
             }
-            let g = gf_pow2(i as i64);
+            let g = gf_pow2(q_exponent(self.layout, n, stripe, i));
             for ((pb, qb), &db) in p.iter_mut().zip(q.iter_mut()).zip(&d) {
                 *pb ^= db;
                 *qb ^= gf_mul(g, db);
@@ -1125,24 +1208,26 @@ impl<R: BlockRead> MdArray<R> {
         match missing.as_slice() {
             [_] if have_p => buf.copy_from_slice(&p),
             [_] if have_q => {
-                // Q' = {02}^x . D_x
-                let inv = gf_pow2(-(x as i64));
+                // Q' = {02}^ex . D_x, ex being D_x's number in Q.
+                let inv = gf_pow2(-q_exponent(self.layout, n, stripe, x));
                 for (b, &qb) in buf.iter_mut().zip(&q) {
                     *b = gf_mul(inv, qb);
                 }
             }
             &[a, b] if have_p && have_q => {
                 let y = if a == x { b } else { a };
-                // P' = D_x + D_y and Q' = g^x D_x + g^y D_y, so
-                // D_x = A P' + B Q' with A = g^(y-x) / (g^(y-x) + 1) and
-                // B = g^(-x) / (g^(y-x) + 1).
-                let gyx = gf_pow2(y as i64 - x as i64);
+                let ex = q_exponent(self.layout, n, stripe, x);
+                let ey = q_exponent(self.layout, n, stripe, y);
+                // P' = D_x + D_y and Q' = g^ex D_x + g^ey D_y, so
+                // D_x = A P' + B Q' with A = g^(ey-ex) / (g^(ey-ex) + 1)
+                // and B = g^(-ex) / (g^(ey-ex) + 1).
+                let gyx = gf_pow2(ey - ex);
                 if gyx ^ 1 == 0 {
                     return Err(lost());
                 }
                 let denom = gf_inv(gyx ^ 1);
                 let ca = gf_mul(gyx, denom);
-                let cb = gf_mul(gf_pow2(-(x as i64)), denom);
+                let cb = gf_mul(gf_pow2(-ex), denom);
                 for ((out, &pb), &qb) in buf.iter_mut().zip(&p).zip(&q) {
                     *out = gf_mul(ca, pb) ^ gf_mul(cb, qb);
                 }
