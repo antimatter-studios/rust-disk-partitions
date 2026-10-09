@@ -8,6 +8,13 @@ never does.
 
 ### Added
 
+- **md arrays and LVM logical volumes open through the C ABI (#164).**
+  `partitions_md_assemble` assembles an array from N device handles and
+  `partitions_lvm_open` opens a logical volume by name; each returns one
+  read-only `FsCoreDevice` usable wherever a partition slice is, so a C
+  caller can go from disks through GPT, md and LVM to a filesystem.
+  `PartitionsArrayError` says why one was refused. Both are checked byte for
+  byte against the kernel's arrays and volumes.
 - **Linux software RAID members can be read as the array they belong to.**
   `md::read_superblock` decodes 0.90, 1.0, 1.1 and 1.2 superblocks, and
   `md::MdArray::assemble` turns the members into one `BlockRead` over the

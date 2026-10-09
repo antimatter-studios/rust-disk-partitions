@@ -591,27 +591,199 @@ pub enum ArrayErrorCode {
     NoMembers = 10,
 }
 
-/// Not yet implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn partitions_md_assemble(
-    _members: *const *const FsCoreDevice,
-    _count: usize,
-    _array_out: *mut *mut FsCoreDevice,
-    _reason_out: *mut i32,
-) -> FsCoreErrorCode {
-    FsCoreErrorCode::Custom
+impl From<&crate::md::MdError> for ArrayErrorCode {
+    fn from(e: &crate::md::MdError) -> Self {
+        use crate::md::MdError as E;
+        match e {
+            E::Block(_) => ArrayErrorCode::Io,
+            E::NoSuperblock { .. } => ArrayErrorCode::NoMetadata,
+            E::BadChecksum { .. } => ArrayErrorCode::BadChecksum,
+            E::Corrupt { .. } => ArrayErrorCode::Corrupt,
+            E::MixedArrays { .. } => ArrayErrorCode::MixedArrays,
+            E::DuplicateRole { .. } => ArrayErrorCode::DuplicateMember,
+            E::TooFewMembers { .. } | E::NoCopyLeft { .. } => ArrayErrorCode::TooFewMembers,
+            E::Unsupported(_) => ArrayErrorCode::Unsupported,
+            E::Empty => ArrayErrorCode::NoMembers,
+            // `MdError` is non-exhaustive; a variant added later is still
+            // a refusal, and the message says which.
+            #[allow(unreachable_patterns)]
+            _ => ArrayErrorCode::Unsupported,
+        }
+    }
 }
 
-/// Not yet implemented.
+impl From<&crate::lvm::LvmError> for ArrayErrorCode {
+    fn from(e: &crate::lvm::LvmError) -> Self {
+        use crate::lvm::LvmError as E;
+        match e {
+            E::Block(_) => ArrayErrorCode::Io,
+            E::NoLabel { .. } => ArrayErrorCode::NoMetadata,
+            E::BadChecksum { .. } => ArrayErrorCode::BadChecksum,
+            E::Corrupt(_) | E::Syntax { .. } => ArrayErrorCode::Corrupt,
+            E::NoSuchVolume(_) => ArrayErrorCode::NoSuchVolume,
+            E::MissingPv(_) => ArrayErrorCode::TooFewMembers,
+            E::Unsupported(_) => ArrayErrorCode::Unsupported,
+            #[allow(unreachable_patterns)]
+            _ => ArrayErrorCode::Unsupported,
+        }
+    }
+}
+
+/// The member handles behind `members[..count]`, each as its own `Arc`.
+/// `None` when the array pointer or any member is NULL.
+unsafe fn member_arcs(
+    members: *const *const FsCoreDevice,
+    count: usize,
+) -> Option<Vec<Arc<dyn fs_core::BlockDevice>>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+    if members.is_null() {
+        return None;
+    }
+    let handles = unsafe { std::slice::from_raw_parts(members, count) };
+    handles
+        .iter()
+        .map(|&h| (!h.is_null()).then(|| unsafe { (*h).inner().clone() }))
+        .collect()
+}
+
+/// Run `open` behind the boundary every array entry point shares: NULL
+/// checks, the out handle cleared first, a panic caught, the reason
+/// written when the caller asked for it, and the result handed out
+/// read-only.
+unsafe fn open_array<E, F, D>(
+    members: *const *const FsCoreDevice,
+    count: usize,
+    out: *mut *mut FsCoreDevice,
+    reason_out: *mut i32,
+    open: F,
+) -> FsCoreErrorCode
+where
+    F: FnOnce(Vec<Arc<dyn fs_core::BlockDevice>>) -> Result<D, E>,
+    D: fs_core::BlockRead + 'static,
+    E: std::fmt::Display,
+    for<'e> ArrayErrorCode: From<&'e E>,
+    E: AsBlockError,
+{
+    if out.is_null() {
+        return FsCoreErrorCode::NullArg;
+    }
+    unsafe { *out = ptr::null_mut() };
+    let mut reason = ArrayErrorCode::None;
+    let Some(devices) = (unsafe { member_arcs(members, count) }) else {
+        set_last_error("a member pointer is NULL");
+        return FsCoreErrorCode::NullArg;
+    };
+    if devices.is_empty() {
+        set_last_error("no members given");
+        if !reason_out.is_null() {
+            unsafe { *reason_out = ArrayErrorCode::NoMembers as i32 };
+        }
+        return FsCoreErrorCode::Custom;
+    }
+    let rc = ffi_guard(|| match open(devices) {
+        Ok(dev) => {
+            let ro = fs_core::ReadOnlyDevice::new(dev);
+            unsafe { *out = FsCoreDevice::into_handle(Arc::new(ro)) };
+            Ok(())
+        }
+        Err(e) => {
+            reason = ArrayErrorCode::from(&e);
+            Err(e
+                .take_block()
+                .unwrap_or_else(|e| fs_core::Error::Custom(e.to_string())))
+        }
+    });
+    // A panic has no reason of its own. It came from reading structures
+    // off the members, so it is reported as theirs being malformed.
+    if rc == FsCoreErrorCode::Panic {
+        reason = ArrayErrorCode::Corrupt;
+    }
+    if !reason_out.is_null() {
+        unsafe { *reason_out = reason as i32 };
+    }
+    rc
+}
+
+/// The underlying device error inside an md or LVM error, so a member's
+/// own failure reaches C with its own code rather than as `Custom`.
+trait AsBlockError: Sized {
+    fn take_block(self) -> Result<fs_core::Error, Self>;
+}
+
+impl AsBlockError for crate::md::MdError {
+    fn take_block(self) -> Result<fs_core::Error, Self> {
+        match self {
+            crate::md::MdError::Block(e) => Ok(e),
+            other => Err(other),
+        }
+    }
+}
+
+impl AsBlockError for crate::lvm::LvmError {
+    fn take_block(self) -> Result<fs_core::Error, Self> {
+        match self {
+            crate::lvm::LvmError::Block(e) => Ok(e),
+            other => Err(other),
+        }
+    }
+}
+
+/// Assemble an md (Linux software RAID) array from `count` member
+/// handles, in any order, into `*array_out`: a read-only device that
+/// reads the bytes the kernel's `/dev/mdX` would. A degraded array
+/// assembles while its level can still read every byte.
+///
+/// The array holds its own references to the members, so the caller may
+/// close them at once. On failure `*array_out` is NULL, the return is
+/// `NullArg` for a NULL pointer (including any NULL member), the member's
+/// code for a member that failed to read, and `Custom` otherwise. When
+/// `reason_out` is not NULL it receives an [`ArrayErrorCode`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn partitions_md_assemble(
+    members: *const *const FsCoreDevice,
+    count: usize,
+    array_out: *mut *mut FsCoreDevice,
+    reason_out: *mut i32,
+) -> FsCoreErrorCode {
+    unsafe {
+        open_array(members, count, array_out, reason_out, |devices| {
+            crate::md::MdArray::assemble(devices)
+        })
+    }
+}
+
+/// Open logical volume `name` (NUL-terminated UTF-8) of the LVM2 volume
+/// group on `count` device handles into `*volume_out`. The devices may be
+/// raw devices, partition slices or arrays from
+/// [`partitions_md_assemble`], in any order, and must include every
+/// physical volume the volume uses.
+///
+/// Ownership, the out handle and the codes are as for
+/// [`partitions_md_assemble`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn partitions_lvm_open(
-    _devices: *const *const FsCoreDevice,
-    _count: usize,
-    _name: *const std::os::raw::c_char,
-    _volume_out: *mut *mut FsCoreDevice,
-    _reason_out: *mut i32,
+    devices: *const *const FsCoreDevice,
+    count: usize,
+    name: *const std::os::raw::c_char,
+    volume_out: *mut *mut FsCoreDevice,
+    reason_out: *mut i32,
 ) -> FsCoreErrorCode {
-    FsCoreErrorCode::Custom
+    if name.is_null() {
+        if !volume_out.is_null() {
+            unsafe { *volume_out = ptr::null_mut() };
+        }
+        return FsCoreErrorCode::NullArg;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe {
+        open_array(devices, count, volume_out, reason_out, |devices| {
+            crate::lvm::LogicalVolume::open(devices, &name)
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
