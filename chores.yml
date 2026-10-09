@@ -217,7 +217,9 @@ tasks:
     # loop devices, the md driver); the test fails naming it otherwise.
     cmds:
       - 'cargo test --locked --features oracle --test oracle_md --no-run'
-      - '../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture'
+      # Budget: 44 lines, 2013 bytes measured with 37 cases (#170; the
+      # oracle job of its run on 2026-10-09), up from 23 cases' 30 lines.
+      - '../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 46 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2'
 
   test:oracle-lvm:
