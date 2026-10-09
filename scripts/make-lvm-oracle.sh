@@ -9,6 +9,12 @@
 #   synology/  three GPT disks: partition 1 of each is an md RAID1 with
 #              0.90 metadata (the system volume), partition 2 an md RAID5
 #              with 1.2 metadata, which is an LVM PV holding vg1000/lv
+#   shr/       four GPT disks of two sizes, the way Synology's SHR builds
+#              them: an md RAID5 over a partition of every disk, an md
+#              RAID1 over the extra partition of the two larger disks, and
+#              one VG over both arrays with vgshr/lv spanning them
+#   two-mdas/  two PVs made with `--pvmetadatacopies 2`, so each keeps a
+#              second copy of the metadata at its end; one LV across both
 #
 # Each case holds the member images (`pv-<n>.img` or `disk-<n>.img`),
 # and `<name>.bin` for each volume: every byte the kernel's device returned
@@ -126,6 +132,56 @@ mdadm --wait /dev/md121 >/dev/null 2>&1 || true
 finish vg1000
 for m in "${mds[@]}"; do mdadm --stop "$m" >/dev/null; done
 mds=()
+
+# --- shr: one VG over two md arrays, from disks of two sizes -----------
+d="$out/shr"
+mkdir -p "$d"
+raid5=()
+raid1=()
+for n in 0 1 2 3; do
+    if [ "$n" -lt 2 ]; then
+        truncate -s 48M "$d/disk-$n.img"
+        printf 'label: gpt\nsize=40MiB, type=A19D880F-05FC-4D3B-A006-743F0F84911E\n' \
+            | sfdisk -q "$d/disk-$n.img"
+    else
+        truncate -s 80M "$d/disk-$n.img"
+        printf 'label: gpt\nsize=40MiB, type=A19D880F-05FC-4D3B-A006-743F0F84911E\nsize=32MiB, type=A19D880F-05FC-4D3B-A006-743F0F84911E\n' \
+            | sfdisk -q "$d/disk-$n.img"
+    fi
+    l="$(attach "$d/disk-$n.img")"
+    raid5+=("${l}p1")
+    [ "$n" -lt 2 ] || raid1+=("${l}p2")
+done
+udevadm settle || true
+mdadm --create /dev/md122 --run --level=5 --raid-devices=4 --metadata=1.2 --chunk=64 "${raid5[@]}" </dev/null
+mds+=(/dev/md122)
+mdadm --create /dev/md123 --run --level=1 --raid-devices=2 --metadata=1.2 "${raid1[@]}" </dev/null
+mds+=(/dev/md123)
+mdadm --wait /dev/md122 /dev/md123 >/dev/null 2>&1 || true
+pvcreate "${LVM[@]}" -q /dev/md122 /dev/md123
+vgcreate "${LVM[@]}" -q -s 4M vgshr /dev/md122 /dev/md123
+vgs+=(vgshr)
+lvcreate "${LVM[@]}" -q -y -l 100%FREE -n lv vgshr
+fill /dev/vgshr/lv lv "$d"
+mdadm --wait /dev/md122 /dev/md123 >/dev/null 2>&1 || true
+finish vgshr
+for m in "${mds[@]}"; do mdadm --stop "$m" >/dev/null; done
+mds=()
+
+# --- two-mdas: a second metadata copy at the end of each PV -------------
+d="$out/two-mdas"
+mkdir -p "$d"
+pvs=()
+for n in 0 1; do
+    truncate -s 24M "$d/pv-$n.img"
+    pvs+=("$(attach "$d/pv-$n.img")")
+done
+pvcreate "${LVM[@]}" -q --pvmetadatacopies 2 "${pvs[@]}"
+vgcreate "${LVM[@]}" -q -s 1M oracle-two-mdas "${pvs[@]}"
+vgs+=(oracle-two-mdas)
+lvcreate "${LVM[@]}" -q -y -l 100%FREE -n m oracle-two-mdas
+fill /dev/oracle-two-mdas/m m "$d"
+finish oracle-two-mdas
 
 for l in "${loops[@]}"; do losetup -d "$l"; done
 loops=()
