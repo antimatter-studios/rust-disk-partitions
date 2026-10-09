@@ -889,10 +889,12 @@ enum Map {
 
 /// A dm-raid or dm-mirror segment, as the kernel lays it out.
 struct RaidMap {
-    /// md level: 1 (also `mirror`), 5 or 6. raid4 is read as level 5
+    /// md level: 1 (also `mirror`), 5, 6 or 10. raid4 is read as level 5
     /// with its parity-first or parity-last layout, which is how md
     /// places those.
     level: i32,
+    /// Level 10 only: where md's raid10 personality keeps each chunk.
+    raid10: Option<crate::md::Raid10>,
     /// md layout, as the dm-raid superblock records it.
     layout: u32,
     /// Chunk size in bytes (unused at level 1).
@@ -993,12 +995,14 @@ impl<R: BlockRead> Mapper<'_, R> {
                 "striped" => self.striped(name, seg)?,
                 "mirror" => Map::Raid(Box::new(RaidMap {
                     level: 1,
+                    raid10: None,
                     layout: 0,
                     chunk: 0,
                     data_offset: 0,
                     images: self.images(seg, depth)?,
                 })),
                 kind if kind == "raid1"
+                    || kind == "raid10"
                     || kind == "raid4"
                     || kind.starts_with("raid5")
                     || kind.starts_with("raid6") =>
@@ -1053,7 +1057,30 @@ impl<R: BlockRead> Mapper<'_, R> {
             1 => (1, 0),
             4 | 5 => (5, 1),
             6 => (6, 2),
+            10 => (10, 0),
             l => return Err(LvmError::Unsupported(format!("{name}: dm-raid level {l}"))),
+        };
+        // dm-raid writes md's raid10 layout word: near copies in bits 0-7
+        // and far copies in 8-15, plus offset (bit 16) and "far sets"
+        // (bit 17, which md's own superblock never carries) for its far
+        // and offset layouts. lvm2 builds near, and near is what is read.
+        let raid10 = if level == 10 {
+            let near = u64::from(sb.layout & 0xff);
+            if sb.layout & !0xff != 1 << 8 {
+                return Err(LvmError::Unsupported(format!(
+                    "{name}: raid10 layout {:#x}; only the near layout is read, not \
+                     dm-raid's far or offset ones",
+                    sb.layout
+                )));
+            }
+            if near == 0 || near > n {
+                return Err(LvmError::Corrupt(format!(
+                    "{name}: raid10 with {near} near copies over {n} images"
+                )));
+            }
+            Some(crate::md::Raid10::near(near))
+        } else {
+            None
         };
         if level != 1 && (sb.chunk == 0 || n <= parity) {
             return Err(LvmError::Corrupt(format!(
@@ -1063,6 +1090,7 @@ impl<R: BlockRead> Mapper<'_, R> {
         }
         Ok(Map::Raid(Box::new(RaidMap {
             level,
+            raid10,
             layout: sb.layout,
             chunk: sb.chunk,
             data_offset: sb.data_offset,
@@ -1172,6 +1200,15 @@ fn read_runs<R: BlockRead>(
             Map::Raid(raid) => {
                 let (image, at, take) = if raid.level == 1 {
                     (0, raid.data_offset + within, want)
+                } else if let Some(geo) = raid.raid10 {
+                    let c = within / raid.chunk;
+                    let inner = within % raid.chunk;
+                    let (slot, row) = geo.primary(raid.images.len() as u64, c);
+                    (
+                        slot,
+                        raid.data_offset + row * raid.chunk + inner,
+                        ((raid.chunk - inner) as usize).min(want),
+                    )
                 } else {
                     let n = raid.images.len() as u64;
                     let parity = if raid.level == 6 { 2 } else { 1 };
@@ -1224,8 +1261,8 @@ impl<R: BlockRead> LogicalVolume<R> {
     /// order.
     ///
     /// `striped` segments are read, and so are `raid1`, `raid4`,
-    /// `raid5*`, `raid6*` and `mirror` ones, through their hidden image
-    /// sub-volumes. A dm-raid segment's level, layout, chunk and data
+    /// `raid5*`, `raid6*`, `raid10` (near layout) and `mirror` ones,
+    /// through their hidden image sub-volumes. A dm-raid segment's level, layout, chunk and data
     /// offset come from the dm-raid superblock in its first metadata
     /// sub-volume, which is what the kernel was given. Every image must
     /// be present; other segment types are refused by name.
