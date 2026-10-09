@@ -214,9 +214,15 @@ fn read_pv_label_of<R: BlockRead + ?Sized>(
     Ok(None)
 }
 
-/// The newest metadata text in the first metadata area of `label`.
-/// `Ok(None)` when the PV has no metadata area, the area holds no text,
-/// or the area is marked to be ignored (`pvchange --metadataignore`).
+/// The newest metadata text among the metadata areas of `label`.
+///
+/// A PV made with `--pvmetadatacopies 2` keeps a second area at its end.
+/// Every area is read and the copy with the highest `seqno` wins; an
+/// area that cannot be read is passed over when another holds a good
+/// copy, which is what the second copy is for. When none can be read,
+/// the first area's error is returned. `Ok(None)` when the PV has no
+/// metadata area, or no area holds text that is not marked to be ignored
+/// (`pvchange --metadataignore`).
 pub fn read_metadata_text<R: BlockRead + ?Sized>(
     dev: &R,
     label: &PvLabel,
@@ -229,9 +235,44 @@ fn read_metadata_text_of<R: BlockRead + ?Sized>(
     label: &PvLabel,
     device: usize,
 ) -> Result<Option<String>, LvmError> {
-    let Some(&(start, size)) = label.metadata_areas.first() else {
-        return Ok(None);
-    };
+    let mut newest: Option<(u64, String)> = None;
+    let mut first_error = None;
+    for &(start, size) in &label.metadata_areas {
+        let text = match read_area(dev, start, size, device) {
+            Ok(Some(text)) => text,
+            Ok(None) => continue,
+            Err(e) => {
+                first_error.get_or_insert(e);
+                continue;
+            }
+        };
+        // A copy that does not parse is no better than one whose
+        // checksum failed.
+        let seqno = match parse_metadata(&text).and_then(|top| VolumeGroup::from_metadata(&top)) {
+            Ok(vg) => vg.seqno,
+            Err(e) => {
+                first_error.get_or_insert(e);
+                continue;
+            }
+        };
+        if newest.as_ref().is_none_or(|(n, _)| seqno > *n) {
+            newest = Some((seqno, text));
+        }
+    }
+    match (newest, first_error) {
+        (Some((_, text)), _) => Ok(Some(text)),
+        (None, Some(e)) => Err(e),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The text in the metadata area at `start`, `size` bytes long.
+fn read_area<R: BlockRead + ?Sized>(
+    dev: &R,
+    start: u64,
+    size: u64,
+    device: usize,
+) -> Result<Option<String>, LvmError> {
     if size <= MDA_HEADER_SIZE || start.checked_add(size).is_none_or(|e| e > dev.size_bytes()) {
         return Err(LvmError::Corrupt(format!(
             "metadata area {start}+{size} on a {}-byte device",

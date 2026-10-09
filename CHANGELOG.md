@@ -59,6 +59,13 @@ never does.
 
 ### Fixed
 
+- **A PV's second metadata copy is read (#166).** A PV made with
+  `--pvmetadatacopies 2` keeps a copy at its end; only the first area was
+  read, so a damaged first copy made the volume group unreadable. Every area
+  is read now and the newest valid copy wins. A volume group spanning two md
+  arrays, as Synology's SHR builds on disks of mixed sizes, is checked against
+  the kernel too.
+
 - **A cold cache no longer fails a test tier on its line count.** The
   `test (release)` and oracle jobs build their tests in a step before the
   budgeted one, so cargo's `Downloaded` and `Compiling` lines stay out of the

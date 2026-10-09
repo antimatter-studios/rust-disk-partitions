@@ -39,7 +39,9 @@ It does **not** mount anything, decode files, or write — it's a probe.
       `lvm::LogicalVolume`, which reads a linear or striped logical volume
       as one `BlockRead` — including one on an `md` array, the way a
       Synology volume is built. Checked byte for byte against the
-      kernel's device-mapper (`tests/oracle_lvm.rs`). Other segment types
+      kernel's device-mapper (`tests/oracle_lvm.rs`), including a group
+      spanning two md arrays as SHR builds it, and the newer of a PV's two
+      metadata copies (`--pvmetadatacopies 2`). Other segment types
       (mirror, raid, thin, cache, snapshot, vdo) are refused by name
 - [x] Discovery: `md::scan` sorts a set of devices into the arrays they
       are members of, `lvm::scan` sorts PVs (raw devices, slices or
