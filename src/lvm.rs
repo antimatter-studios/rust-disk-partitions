@@ -912,8 +912,14 @@ mod dm_raid {
     pub const LEVEL: usize = 48;
     pub const LAYOUT: usize = 52;
     pub const STRIPE_SECTORS: usize = 56;
-    pub const DATA_OFFSET: usize = 88;
-    pub const SIZE: usize = 112;
+    // After stripe_sectors, the 1.9.0 extension: flags (60),
+    // reshape_position (64), new_level, new_layout, new_stripe_sectors,
+    // delta_disks (72..88), array_sectors (88), then data_offset (96),
+    // new_data_offset (104) and sectors (112). Offset 88 is the array's
+    // size, which a first reading took for the data offset: every image
+    // then began past its own end (CI run 37975574393).
+    pub const DATA_OFFSET: usize = 96;
+    pub const SIZE: usize = 120;
 }
 
 /// The parts of a dm-raid superblock reading needs.
