@@ -17,8 +17,9 @@
 #              second copy of the metadata at its end; one LV across both
 #   raid/      five PVs holding LVs whose segments are dm-raid and
 #              dm-mirror rather than striped: r1 (raid1, two images), r5
-#              (raid5, two data stripes), r6 (raid6, three data stripes)
-#              and m1 (mirror, two images, core log)
+#              (raid5, two data stripes), r6 (raid6, three data stripes),
+#              r10 (raid10, two stripes of two near copies) and m1
+#              (mirror, two images, core log)
 #
 # Each case holds the member images (`pv-<n>.img` or `disk-<n>.img`),
 # and `<name>.bin` for each volume: every byte the kernel's device returned
@@ -36,7 +37,7 @@ for t in mdadm pvcreate sfdisk; do
 done
 # Named here so a missing one says which, rather than surfacing as a
 # create error further down.
-modprobe -a raid1 raid456 dm_mod dm_raid dm_mirror || { echo "cannot load raid1, raid456, dm_mod, dm_raid or dm_mirror; this script does not skip" >&2; exit 1; }
+modprobe -a raid1 raid456 raid10 dm_mod dm_raid dm_mirror || { echo "cannot load raid1, raid456, raid10, dm_mod, dm_raid or dm_mirror; this script does not skip" >&2; exit 1; }
 
 # Only the devices this script made: a host's own PVs are never touched,
 # and no devices file decides what is visible.
@@ -192,7 +193,7 @@ d="$out/raid"
 mkdir -p "$d"
 pvs=()
 for n in 0 1 2 3 4; do
-    truncate -s 24M "$d/pv-$n.img"
+    truncate -s 32M "$d/pv-$n.img"
     pvs+=("$(attach "$d/pv-$n.img")")
 done
 pvcreate "${LVM[@]}" -q "${pvs[@]}"
@@ -201,6 +202,7 @@ vgs+=(oracle-raid)
 lvcreate "${LVM[@]}" -q -y --type raid1 -m 1 -L 8M -n r1 oracle-raid
 lvcreate "${LVM[@]}" -q -y --type raid5 -i 2 -L 8M -n r5 oracle-raid
 lvcreate "${LVM[@]}" -q -y --type raid6 -i 3 -L 12M -n r6 oracle-raid
+lvcreate "${LVM[@]}" -q -y --type raid10 -i 2 -m 1 -L 8M -n r10 oracle-raid
 lvcreate "${LVM[@]}" -q -y --type mirror -m 1 --mirrorlog core -L 8M -n m1 oracle-raid
 # synced LV: wait until the kernel reports every copy and parity in step,
 # so what is read back is what the kernel keeps on every member.
@@ -214,7 +216,7 @@ synced() {
     echo "oracle-raid/$lv did not finish syncing ($pct%); this script does not skip" >&2
     exit 1
 }
-for lv in r1 r5 r6 m1; do
+for lv in r1 r5 r6 r10 m1; do
     synced "$lv"
     fill "/dev/oracle-raid/$lv" "$lv" "$d"
     synced "$lv"
