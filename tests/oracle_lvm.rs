@@ -22,8 +22,9 @@ use disk_partitions::capi::{
     partitions_list_free, partitions_lvm_open, partitions_md_assemble, partitions_open_slice,
     partitions_probe, ArrayErrorCode, PartitionList,
 };
-use disk_partitions::lvm::{read_volume_group, LogicalVolume};
-use disk_partitions::md::MdArray;
+use disk_partitions::container::{self, Container};
+use disk_partitions::lvm::{self, read_volume_group, LogicalVolume};
+use disk_partitions::md::{self, MdArray};
 use disk_partitions::{probe, BlockRead, FileBlock, OwnedSlice};
 use fs_core::ffi::{
     fs_core_device_close, fs_core_device_read_at, fs_core_device_size_bytes, fs_core_file_open,
@@ -241,5 +242,80 @@ fn a_synology_layout_reads_through_gpt_md_and_lvm_in_the_c_abi() {
         let got = lv_through_c(&what, &[array], "lv");
         unsafe { fs_core_device_close(array) };
         same_bytes(&what, &got, &dir.join("lv.bin"));
+    }
+}
+
+/// Every partition of the given Synology-like disk images, as devices.
+fn every_partition(dir: &Path, skip: Option<usize>) -> Vec<OwnedSlice> {
+    (0..3)
+        .filter(|&n| Some(n) != skip)
+        .flat_map(|n| {
+            let disk: Arc<dyn BlockRead> =
+                Arc::new(FileBlock::open(dir.join(format!("disk-{n}.img"))).unwrap());
+            let (_, parts) = probe(&*disk).unwrap();
+            parts
+                .into_iter()
+                .map(move |p| OwnedSlice::new(disk.clone(), p.start, p.length))
+        })
+        .collect()
+}
+
+/// Handed only the disk images, discovery finds both md arrays and
+/// `vg1000/lv` without being told which partitions belong together, and
+/// the volume reads the kernel's bytes (#163).
+#[test]
+fn a_synology_layout_is_discovered_from_the_disks_alone() {
+    let dir = oracle_dir().join("synology");
+    for skip in [None, Some(2)] {
+        let parts = every_partition(&dir, skip);
+        for p in &parts {
+            assert!(
+                matches!(container::detect(p), Ok(Some(Container::MdMember { .. }))),
+                "every partition on these disks is an md member"
+            );
+        }
+        let found = md::scan(parts);
+        let refused: Vec<String> = found.refused.iter().map(|(_, e)| e.to_string()).collect();
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(found.arrays.len(), 2, "the system array and the data array");
+        let mut arrays = Vec::new();
+        for group in found.arrays {
+            let array = group.assemble().expect("each array assembles");
+            arrays.push(array);
+        }
+        let levels: Vec<i32> = arrays.iter().map(|a| a.superblock().level).collect();
+        assert_eq!(levels, [1, 5]);
+        same(
+            &format!("discovered system array without disk {skip:?}"),
+            &arrays[0],
+            &dir.join("system.bin"),
+        );
+        assert!(
+            matches!(
+                container::detect(&arrays[1]),
+                Ok(Some(Container::LvmPv { .. }))
+            ),
+            "the data array is a physical volume"
+        );
+
+        let vgs = lvm::scan(arrays);
+        assert_eq!(vgs.volume_groups.len(), 1);
+        assert_eq!(vgs.others.len(), 1, "the system array holds no PV");
+        let group = vgs.volume_groups.into_iter().next().unwrap();
+        assert_eq!(group.volume_group.name, "vg1000");
+        assert!(group.missing.is_empty());
+        let names: Vec<&str> = group
+            .volume_group
+            .logical_volumes
+            .iter()
+            .map(|l| l.name.as_str())
+            .collect();
+        assert!(names.contains(&"lv"), "{names:?}");
+        let lv = LogicalVolume::open(group.devices, "lv").unwrap();
+        same(
+            &format!("discovered vg1000/lv without disk {skip:?}"),
+            &lv,
+            &dir.join("lv.bin"),
+        );
     }
 }

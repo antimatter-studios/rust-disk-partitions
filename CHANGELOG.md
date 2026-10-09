@@ -15,6 +15,12 @@ never does.
   caller can go from disks through GPT, md and LVM to a filesystem.
   `PartitionsArrayError` says why one was refused. Both are checked byte for
   byte against the kernel's arrays and volumes.
+- **md arrays and LVM volume groups are discovered from a set of devices
+  (#163).** `md::scan` groups devices by array UUID and `lvm::scan` groups
+  physical volumes by volume group, so a caller handed a NAS's disks no
+  longer has to know which partitions belong together. `container::detect`
+  names an `md` member or an LVM2 PV, which `sniff` reports as `Unknown`;
+  it is a separate probe so that `FsKind` keeps its variants.
 - **Linux software RAID members can be read as the array they belong to.**
   `md::read_superblock` decodes 0.90, 1.0, 1.1 and 1.2 superblocks, and
   `md::MdArray::assemble` turns the members into one `BlockRead` over the

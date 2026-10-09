@@ -41,6 +41,12 @@ It does **not** mount anything, decode files, or write — it's a probe.
       Synology volume is built. Checked byte for byte against the
       kernel's device-mapper (`tests/oracle_lvm.rs`). Other segment types
       (mirror, raid, thin, cache, snapshot, vdo) are refused by name
+- [x] Discovery: `md::scan` sorts a set of devices into the arrays they
+      are members of, `lvm::scan` sorts PVs (raw devices, slices or
+      assembled arrays) into their volume groups, and `container::detect`
+      says whether one device is an `md` member or an LVM2 PV. Checked by
+      discovering a Synology-style layout from its disk images alone
+      (`tests/oracle_lvm.rs`)
 - [ ] LUKS detection
 - [ ] Logical-partition (extended MBR) chain walking. Until it exists,
       `mbr::parse` and `probe` leave the extended container itself out of
