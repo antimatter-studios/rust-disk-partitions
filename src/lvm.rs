@@ -568,6 +568,12 @@ pub struct Segment {
     pub stripe_size: u64,
     /// The stripes, in order.
     pub stripes: Vec<Stripe>,
+    /// A `raid*` or `mirror` segment's images, in order: the hidden
+    /// sub-volumes (`<lv>_rimage_N`, `<lv>_mimage_N`) holding the data.
+    pub images: Vec<String>,
+    /// A `raid*` segment's metadata sub-volumes (`<lv>_rmeta_N`), one per
+    /// image, each starting with the dm-raid superblock.
+    pub metadata: Vec<String>,
 }
 
 /// A logical volume.
@@ -669,12 +675,52 @@ impl VolumeGroup {
                                 .ok_or_else(|| LvmError::Corrupt("stripe_size".into()))?;
                         }
                     }
+                    let mut images = Vec::new();
+                    let mut metadata = Vec::new();
+                    if kind.starts_with("raid") {
+                        // [rmeta_0, rimage_0, rmeta_1, rimage_1, ...]
+                        let Some(Value::List(items)) = seg.get("raids") else {
+                            return Err(LvmError::Corrupt(format!("{lv_name}/{key}: no raids")));
+                        };
+                        for pair in items.chunks(2) {
+                            match pair {
+                                [Value::Str(meta), Value::Str(image)] => {
+                                    metadata.push(meta.clone());
+                                    images.push(image.clone());
+                                }
+                                _ => {
+                                    return Err(LvmError::Unsupported(format!(
+                                        "{lv_name}/{key}: a raids list without a metadata \
+                                         sub-volume per image"
+                                    )))
+                                }
+                            }
+                        }
+                    } else if kind == "mirror" {
+                        // [mimage_0, 0, mimage_1, 0, ...]
+                        let Some(Value::List(items)) = seg.get("mirrors") else {
+                            return Err(LvmError::Corrupt(format!("{lv_name}/{key}: no mirrors")));
+                        };
+                        for pair in items.chunks(2) {
+                            match pair {
+                                [Value::Str(image), Value::Int(0)] => images.push(image.clone()),
+                                _ => {
+                                    return Err(LvmError::Unsupported(format!(
+                                        "{lv_name}/{key}: a mirror image that does not start \
+                                         at its sub-volume's first extent"
+                                    )))
+                                }
+                            }
+                        }
+                    }
                     segments.push(Segment {
                         start_extent: seg.uint("start_extent")?,
                         extent_count: seg.uint("extent_count")?,
                         kind,
                         stripe_size,
                         stripes,
+                        images,
+                        metadata,
                     });
                 }
                 segments.sort_by_key(|s| s.start_extent);
@@ -824,9 +870,335 @@ pub fn scan<R: BlockRead>(devices: Vec<R>) -> LvmScan<R> {
 struct Run {
     start: u64,
     len: u64,
-    stripe_size: u64,
-    /// (device index, byte offset of the stripe's first extent).
-    stripes: Vec<(usize, u64)>,
+    map: Map,
+}
+
+/// How a run's bytes are laid out.
+enum Map {
+    /// `striped`: `stripe_size` chunks round the stripes in turn, or one
+    /// stripe holding the run whole. (device index, byte offset of the
+    /// stripe's first extent).
+    Striped {
+        stripe_size: u64,
+        stripes: Vec<(usize, u64)>,
+    },
+    /// `raid*` and `mirror`: the data is laid out over images, each a
+    /// hidden sub-volume mapped as runs of its own.
+    Raid(Box<RaidMap>),
+}
+
+/// A dm-raid or dm-mirror segment, as the kernel lays it out.
+struct RaidMap {
+    /// md level: 1 (also `mirror`), 5 or 6. raid4 is read as level 5
+    /// with its parity-first or parity-last layout, which is how md
+    /// places those.
+    level: i32,
+    /// md layout, as the dm-raid superblock records it.
+    layout: u32,
+    /// Chunk size in bytes (unused at level 1).
+    chunk: u64,
+    /// Where the data starts on each image, in bytes.
+    data_offset: u64,
+    /// Each image's runs, in image order.
+    images: Vec<Vec<Run>>,
+}
+
+/// dm-raid's on-disk superblock, at the start of each `rmeta` sub-volume:
+/// the kernel's `struct dm_raid_superblock` (drivers/md/dm-raid.c).
+mod dm_raid {
+    pub const MAGIC: u32 = 0x6452_6d44; // "DmRd"
+    pub const COMPAT_V190: u32 = 0x1;
+    pub const COMPAT_FEATURES: usize = 4;
+    pub const LEVEL: usize = 48;
+    pub const LAYOUT: usize = 52;
+    pub const STRIPE_SECTORS: usize = 56;
+    // After stripe_sectors, the 1.9.0 extension: flags (60),
+    // reshape_position (64), new_level, new_layout, new_stripe_sectors,
+    // delta_disks (72..88), array_sectors (88), then data_offset (96),
+    // new_data_offset (104) and sectors (112). Offset 88 is the array's
+    // size, which a first reading took for the data offset: every image
+    // then began past its own end (CI run 37975574393).
+    pub const DATA_OFFSET: usize = 96;
+    pub const SIZE: usize = 120;
+}
+
+/// The parts of a dm-raid superblock reading needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DmRaidSuper {
+    level: i32,
+    layout: u32,
+    chunk: u64,
+    data_offset: u64,
+}
+
+fn parse_dm_raid_super(b: &[u8], what: &str) -> Result<DmRaidSuper, LvmError> {
+    if b.len() < dm_raid::SIZE || le32(b, 0) != dm_raid::MAGIC {
+        return Err(LvmError::Corrupt(format!("{what}: no dm-raid superblock")));
+    }
+    // The data offset is a 1.9.0 extension; before it, data starts at 0.
+    let data_offset = if le32(b, dm_raid::COMPAT_FEATURES) & dm_raid::COMPAT_V190 != 0 {
+        le64(b, dm_raid::DATA_OFFSET)
+    } else {
+        0
+    };
+    Ok(DmRaidSuper {
+        level: le32(b, dm_raid::LEVEL) as i32,
+        layout: le32(b, dm_raid::LAYOUT),
+        chunk: u64::from(le32(b, dm_raid::STRIPE_SECTORS)) * SECTOR,
+        data_offset: data_offset
+            .checked_mul(SECTOR)
+            .ok_or_else(|| LvmError::Corrupt(format!("{what}: data offset overflows")))?,
+    })
+}
+
+/// What resolving a volume's segments needs from the group and devices.
+struct Mapper<'a, R: BlockRead> {
+    vg: &'a VolumeGroup,
+    uuid_to_dev: &'a BTreeMap<String, usize>,
+    devices: &'a [R],
+}
+
+impl<R: BlockRead> Mapper<'_, R> {
+    fn lv(&self, name: &str) -> Result<&LogicalVolumeInfo, LvmError> {
+        self.vg
+            .logical_volumes
+            .iter()
+            .find(|lv| lv.name == name)
+            .ok_or_else(|| LvmError::NoSuchVolume(name.to_string()))
+    }
+
+    /// `name`'s runs and its size in bytes. `depth` bounds sub-volume
+    /// nesting, so a cycle in the metadata is refused, not followed.
+    fn map(&self, name: &str, depth: u32) -> Result<(Vec<Run>, u64), LvmError> {
+        if depth > 2 {
+            return Err(LvmError::Unsupported(format!(
+                "{name}: sub-volumes nested deeper than an image of an image"
+            )));
+        }
+        let info = self.lv(name)?;
+        let ext = self.vg.extent_size;
+        let mut runs = Vec::new();
+        let mut next = 0u64;
+        for seg in &info.segments {
+            if seg.start_extent != next {
+                return Err(LvmError::Corrupt(format!(
+                    "{name}: segments leave a gap at extent {next}"
+                )));
+            }
+            let len = seg
+                .extent_count
+                .checked_mul(ext)
+                .ok_or_else(|| LvmError::Corrupt("segment size overflows".into()))?;
+            let map = match seg.kind.as_str() {
+                "striped" => self.striped(name, seg)?,
+                "mirror" => Map::Raid(Box::new(RaidMap {
+                    level: 1,
+                    layout: 0,
+                    chunk: 0,
+                    data_offset: 0,
+                    images: self.images(seg, depth)?,
+                })),
+                kind if kind == "raid1"
+                    || kind == "raid4"
+                    || kind.starts_with("raid5")
+                    || kind.starts_with("raid6") =>
+                {
+                    self.raid(name, seg, depth)?
+                }
+                kind => {
+                    return Err(LvmError::Unsupported(format!(
+                        "segment type {kind:?} in {name}"
+                    )))
+                }
+            };
+            runs.push(Run {
+                start: next * ext,
+                len,
+                map,
+            });
+            next += seg.extent_count;
+        }
+        Ok((runs, next * ext))
+    }
+
+    fn images(&self, seg: &Segment, depth: u32) -> Result<Vec<Vec<Run>>, LvmError> {
+        if seg.images.is_empty() {
+            return Err(LvmError::Corrupt(
+                "a raid or mirror segment with no images".into(),
+            ));
+        }
+        seg.images
+            .iter()
+            .map(|image| self.map(image, depth + 1).map(|(runs, _)| runs))
+            .collect()
+    }
+
+    fn raid(&self, name: &str, seg: &Segment, depth: u32) -> Result<Map, LvmError> {
+        if seg.metadata.len() != seg.images.len() {
+            return Err(LvmError::Corrupt(format!(
+                "{name}: {} images and {} metadata sub-volumes",
+                seg.images.len(),
+                seg.metadata.len()
+            )));
+        }
+        // Every image's superblock describes the array; the first one
+        // present is read, and the rest are not needed to place data.
+        let (meta_runs, _) = self.map(&seg.metadata[0], depth + 1)?;
+        let mut b = [0u8; dm_raid::SIZE];
+        read_runs(self.devices, &meta_runs, 0, &mut b).map_err(LvmError::Block)?;
+        let sb = parse_dm_raid_super(&b, &seg.metadata[0])?;
+        let images = self.images(seg, depth)?;
+        let n = images.len() as u64;
+        let (level, parity) = match sb.level {
+            1 => (1, 0),
+            4 | 5 => (5, 1),
+            6 => (6, 2),
+            l => return Err(LvmError::Unsupported(format!("{name}: dm-raid level {l}"))),
+        };
+        if level != 1 && (sb.chunk == 0 || n <= parity) {
+            return Err(LvmError::Corrupt(format!(
+                "{name}: raid{} with {n} images and a {}-byte chunk",
+                sb.level, sb.chunk
+            )));
+        }
+        Ok(Map::Raid(Box::new(RaidMap {
+            level,
+            layout: sb.layout,
+            chunk: sb.chunk,
+            data_offset: sb.data_offset,
+            images,
+        })))
+    }
+
+    fn striped(&self, name: &str, seg: &Segment) -> Result<Map, LvmError> {
+        let ext = self.vg.extent_size;
+        let n = seg.stripes.len() as u64;
+        if n == 0 || !seg.extent_count.is_multiple_of(n) {
+            return Err(LvmError::Corrupt(format!(
+                "{name}: {} extents over {n} stripes",
+                seg.extent_count
+            )));
+        }
+        let per_stripe = seg.extent_count / n;
+        let mut stripes = Vec::new();
+        for st in &seg.stripes {
+            let pv = self
+                .vg
+                .physical_volumes
+                .iter()
+                .find(|p| p.name == st.pv)
+                .ok_or_else(|| LvmError::Corrupt(format!("unknown PV {}", st.pv)))?;
+            let &dev = self
+                .uuid_to_dev
+                .get(&pv.uuid)
+                .ok_or_else(|| LvmError::MissingPv(pv.uuid.clone()))?;
+            if st
+                .start_extent
+                .checked_add(per_stripe)
+                .is_none_or(|e| e > pv.pe_count)
+            {
+                return Err(LvmError::Corrupt(format!("{name}: stripe past {}", st.pv)));
+            }
+            let off = st
+                .start_extent
+                .checked_mul(ext)
+                .and_then(|o| o.checked_add(pv.pe_start))
+                .ok_or_else(|| LvmError::Corrupt("extent offset overflows".into()))?;
+            let end = off.checked_add(per_stripe * ext);
+            if end.is_none_or(|e| e > self.devices[dev].size_bytes()) {
+                return Err(LvmError::Corrupt(format!(
+                    "{name}: stripe runs past the end of {}",
+                    st.pv
+                )));
+            }
+            stripes.push((dev, off));
+        }
+        if n > 1 && !(per_stripe * ext).is_multiple_of(seg.stripe_size) {
+            return Err(LvmError::Unsupported(format!(
+                "{name}: stripe size {} does not divide the extent run",
+                seg.stripe_size
+            )));
+        }
+        Ok(Map::Striped {
+            stripe_size: seg.stripe_size,
+            stripes,
+        })
+    }
+}
+
+/// Read `buf` at `offset` of the volume `runs` describe.
+fn read_runs<R: BlockRead>(
+    devices: &[R],
+    runs: &[Run],
+    offset: u64,
+    buf: &mut [u8],
+) -> fs_core::Result<()> {
+    let mut done = 0usize;
+    while done < buf.len() {
+        let pos = offset + done as u64;
+        let run = runs
+            .iter()
+            .find(|r| pos >= r.start && pos < r.start + r.len)
+            .ok_or(fs_core::Error::OutOfBounds {
+                offset: pos,
+                len: (buf.len() - done) as u64,
+                size: runs.last().map_or(0, |r| r.start + r.len),
+            })?;
+        let within = pos - run.start;
+        let room = (run.start + run.len - pos) as usize;
+        let want = room.min(buf.len() - done);
+        let take = match &run.map {
+            Map::Striped {
+                stripe_size,
+                stripes,
+            } => {
+                let (dev, at, take) = if stripes.len() == 1 {
+                    let (d, o) = stripes[0];
+                    (d, o + within, want)
+                } else {
+                    let n = stripes.len() as u64;
+                    let k = within / stripe_size;
+                    let inner = within % stripe_size;
+                    let (d, o) = stripes[(k % n) as usize];
+                    (
+                        d,
+                        o + (k / n) * stripe_size + inner,
+                        ((stripe_size - inner) as usize).min(want),
+                    )
+                };
+                devices[dev].read_at(at, &mut buf[done..done + take])?;
+                take
+            }
+            Map::Raid(raid) => {
+                let (image, at, take) = if raid.level == 1 {
+                    (0, raid.data_offset + within, want)
+                } else {
+                    let n = raid.images.len() as u64;
+                    let parity = if raid.level == 6 { 2 } else { 1 };
+                    let data = n - parity;
+                    let c = within / raid.chunk;
+                    let inner = within % raid.chunk;
+                    let stripe = c / data;
+                    let (dd, _, _) =
+                        crate::md::parity_map(raid.level, raid.layout, n, stripe, c % data);
+                    (
+                        dd,
+                        raid.data_offset + stripe * raid.chunk + inner,
+                        ((raid.chunk - inner) as usize).min(want),
+                    )
+                };
+                read_runs(
+                    devices,
+                    &raid.images[image],
+                    at,
+                    &mut buf[done..done + take],
+                )?;
+                take
+            }
+        };
+        done += take;
+    }
+    Ok(())
 }
 
 /// A logical volume, read through its physical volumes.
@@ -850,93 +1222,28 @@ impl<R: BlockRead> LogicalVolume<R> {
     /// Open logical volume `name` of the volume group on `devices`, which
     /// must include every physical volume the volume touches, in any
     /// order.
+    ///
+    /// `striped` segments are read, and so are `raid1`, `raid4`,
+    /// `raid5*`, `raid6*` and `mirror` ones, through their hidden image
+    /// sub-volumes. A dm-raid segment's level, layout, chunk and data
+    /// offset come from the dm-raid superblock in its first metadata
+    /// sub-volume, which is what the kernel was given. Every image must
+    /// be present; other segment types are refused by name.
     pub fn open(devices: Vec<R>, name: &str) -> Result<Self, LvmError> {
         let vg = read_volume_group(&devices)?;
-        let info = vg
-            .logical_volumes
-            .iter()
-            .find(|lv| lv.name == name)
-            .cloned()
-            .ok_or_else(|| LvmError::NoSuchVolume(name.to_string()))?;
         // PV key -> device index, by matching the label UUID.
         let mut uuid_to_dev = BTreeMap::new();
         for (i, dev) in devices.iter().enumerate() {
             let label = read_pv_label_of(dev, i)?.ok_or(LvmError::NoLabel { device: i })?;
             uuid_to_dev.insert(label.uuid, i);
         }
-        let ext = vg.extent_size;
-        let mut runs = Vec::new();
-        let mut next = 0u64;
-        for seg in &info.segments {
-            if seg.kind != "striped" {
-                return Err(LvmError::Unsupported(format!(
-                    "segment type {:?} in {name}",
-                    seg.kind
-                )));
-            }
-            if seg.start_extent != next {
-                return Err(LvmError::Corrupt(format!(
-                    "{name}: segments leave a gap at extent {next}"
-                )));
-            }
-            let n = seg.stripes.len() as u64;
-            if !seg.extent_count.is_multiple_of(n) {
-                return Err(LvmError::Corrupt(format!(
-                    "{name}: {} extents over {n} stripes",
-                    seg.extent_count
-                )));
-            }
-            let per_stripe = seg.extent_count / n;
-            let mut stripes = Vec::new();
-            for st in &seg.stripes {
-                let pv = vg
-                    .physical_volumes
-                    .iter()
-                    .find(|p| p.name == st.pv)
-                    .ok_or_else(|| LvmError::Corrupt(format!("unknown PV {}", st.pv)))?;
-                let &dev = uuid_to_dev
-                    .get(&pv.uuid)
-                    .ok_or_else(|| LvmError::MissingPv(pv.uuid.clone()))?;
-                if st
-                    .start_extent
-                    .checked_add(per_stripe)
-                    .is_none_or(|e| e > pv.pe_count)
-                {
-                    return Err(LvmError::Corrupt(format!("{name}: stripe past {}", st.pv)));
-                }
-                let off = st
-                    .start_extent
-                    .checked_mul(ext)
-                    .and_then(|o| o.checked_add(pv.pe_start))
-                    .ok_or_else(|| LvmError::Corrupt("extent offset overflows".into()))?;
-                let end = off.checked_add(per_stripe * ext);
-                if end.is_none_or(|e| e > devices[dev].size_bytes()) {
-                    return Err(LvmError::Corrupt(format!(
-                        "{name}: stripe runs past the end of {}",
-                        st.pv
-                    )));
-                }
-                stripes.push((dev, off));
-            }
-            let len = seg
-                .extent_count
-                .checked_mul(ext)
-                .ok_or_else(|| LvmError::Corrupt("segment size overflows".into()))?;
-            if n > 1 && !(per_stripe * ext).is_multiple_of(seg.stripe_size) {
-                return Err(LvmError::Unsupported(format!(
-                    "{name}: stripe size {} does not divide the extent run",
-                    seg.stripe_size
-                )));
-            }
-            runs.push(Run {
-                start: next * ext,
-                len,
-                stripe_size: seg.stripe_size,
-                stripes,
-            });
-            next += seg.extent_count;
-        }
-        let size = next * ext;
+        let mapper = Mapper {
+            vg: &vg,
+            uuid_to_dev: &uuid_to_dev,
+            devices: &devices,
+        };
+        let info = mapper.lv(name)?.clone();
+        let (runs, size) = mapper.map(name, 0)?;
         Ok(LogicalVolume {
             devices,
             runs,
@@ -964,35 +1271,7 @@ impl<R: BlockRead> BlockRead for LogicalVolume<R> {
                 })
             }
         }
-        let mut done = 0usize;
-        while done < buf.len() {
-            let pos = offset + done as u64;
-            let run = self
-                .runs
-                .iter()
-                .find(|r| pos >= r.start && pos < r.start + r.len)
-                .expect("runs cover the volume");
-            let within = pos - run.start;
-            let room = (run.start + run.len - pos) as usize;
-            let (dev, at, take) = if run.stripes.len() == 1 {
-                let (d, o) = run.stripes[0];
-                (d, o + within, room)
-            } else {
-                let n = run.stripes.len() as u64;
-                let k = within / run.stripe_size;
-                let inner = within % run.stripe_size;
-                let (d, o) = run.stripes[(k % n) as usize];
-                (
-                    d,
-                    o + (k / n) * run.stripe_size + inner,
-                    (run.stripe_size - inner) as usize,
-                )
-            };
-            let take = take.min(room).min(buf.len() - done);
-            self.devices[dev].read_at(at, &mut buf[done..done + take])?;
-            done += take;
-        }
-        Ok(())
+        read_runs(&self.devices, &self.runs, offset, buf)
     }
 
     fn size_bytes(&self) -> u64 {
@@ -1551,6 +1830,143 @@ pool = "pool_tdata"
                 what: "metadata area header",
                 ..
             })
+        ));
+    }
+
+    /// A dm-raid superblock: `level`, md `layout`, a chunk of
+    /// `chunk_sectors` and data starting `data_offset_sectors` into each
+    /// image.
+    fn dm_raid_sb(
+        level: u32,
+        layout: u32,
+        chunk_sectors: u32,
+        data_offset_sectors: u64,
+    ) -> Vec<u8> {
+        let mut b = vec![0u8; SECTOR as usize];
+        put32(&mut b, 0, dm_raid::MAGIC);
+        put32(&mut b, dm_raid::COMPAT_FEATURES, dm_raid::COMPAT_V190);
+        put32(&mut b, dm_raid::LEVEL, level);
+        put32(&mut b, dm_raid::LAYOUT, layout);
+        put32(&mut b, dm_raid::STRIPE_SECTORS, chunk_sectors);
+        put64(&mut b, dm_raid::DATA_OFFSET, data_offset_sectors);
+        b
+    }
+
+    /// One `striped` sub-volume of `count` extents at `extent` of `pv`.
+    fn sub_lv(name: &str, pv: &str, extent: u64, count: u64) -> String {
+        format!(
+            "{name} {{\nid = \"{name}\"\nsegment1 {{\nstart_extent = 0\nextent_count = {count}\n\
+             type = \"striped\"\nstripe_count = 1\nstripes = [\"{pv}\", {extent}]\n}}\n}}\n"
+        )
+    }
+
+    /// Where extent `e` of PV image `pv` starts, in bytes.
+    fn at(e: u64) -> usize {
+        (PE_START + e * EXT) as usize
+    }
+
+    /// raid1 over two images, data starting one chunk into each image as
+    /// the dm-raid superblock says, and a mirror over two images.
+    #[test]
+    fn raid1_and_mirror_segments_read_their_first_image() {
+        let data = pattern(4 * EXT, 23);
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 4\ntype = \"raid1\"\n\
+             device_count = 2\nraids = [\"r_rmeta_0\", \"r_rimage_0\", \"r_rmeta_1\", \"r_rimage_1\"]\n}}\n}}\n\
+             m {{\nid = \"m\"\nsegment1 {{\nstart_extent = 0\nextent_count = 4\ntype = \"mirror\"\n\
+             mirror_count = 2\nmirrors = [\"m_mimage_0\", 0, \"m_mimage_1\", 0]\n}}\n}}\n{}{}{}{}{}{}",
+            sub_lv("r_rmeta_0", "pv0", 10, 1),
+            sub_lv("r_rimage_0", "pv0", 11, 5),
+            sub_lv("r_rmeta_1", "pv1", 10, 1),
+            sub_lv("r_rimage_1", "pv1", 11, 5),
+            sub_lv("m_mimage_0", "pv0", 20, 4),
+            sub_lv("m_mimage_1", "pv1", 20, 4),
+        );
+        let text = vg_text(5, &lvs);
+        let mut pv0 = pv_image(&uuid(0), &text, MDA_HEADER_SIZE);
+        let mut pv1 = pv_image(&uuid(1), &text, MDA_HEADER_SIZE);
+        // Data one chunk (16 sectors) into each raid1 image.
+        let off = 16 * SECTOR as usize;
+        for pv in [&mut pv0, &mut pv1] {
+            pv[at(10)..at(10) + SECTOR as usize].copy_from_slice(&dm_raid_sb(1, 0, 16, 16));
+            pv[at(11) + off..at(11) + off + data.len()].copy_from_slice(&data);
+            pv[at(20)..at(20) + data.len()].copy_from_slice(&data);
+        }
+        for name in ["r", "m"] {
+            let lv = LogicalVolume::open(vec![Mem(pv0.clone()), Mem(pv1.clone())], name).unwrap();
+            assert_eq!(lv.size_bytes(), 4 * EXT, "{name}");
+            assert_eq!(read_all(&lv), data, "{name}");
+        }
+    }
+
+    /// raid5 (left-symmetric) over three images, data placed by md's
+    /// parity map: what the superblock's level, layout and chunk say.
+    #[test]
+    fn a_raid5_segment_reads_its_data_chunks_round_the_images() {
+        let chunk = 16 * SECTOR;
+        let data = pattern(4 * EXT, 29);
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 4\ntype = \"raid5_ls\"\n\
+             device_count = 3\nstripe_size = 16\nraids = [\"r_rmeta_0\", \"r_rimage_0\", \"r_rmeta_1\", \
+             \"r_rimage_1\", \"r_rmeta_2\", \"r_rimage_2\"]\n}}\n}}\n{}{}{}{}{}{}",
+            sub_lv("r_rmeta_0", "pv0", 30, 1),
+            sub_lv("r_rimage_0", "pv0", 31, 2),
+            sub_lv("r_rmeta_1", "pv1", 30, 1),
+            sub_lv("r_rimage_1", "pv1", 31, 2),
+            sub_lv("r_rmeta_2", "pv0", 34, 1),
+            sub_lv("r_rimage_2", "pv0", 35, 2),
+        );
+        let text = vg_text(5, &lvs);
+        let mut pvs = [
+            pv_image(&uuid(0), &text, MDA_HEADER_SIZE),
+            pv_image(&uuid(1), &text, MDA_HEADER_SIZE),
+        ];
+        // (PV index, first extent) of each image and its metadata.
+        let images = [(0usize, 31u64), (1, 31), (0, 35)];
+        for (pv, meta) in [(0usize, 30u64), (1, 30), (0, 34)] {
+            pvs[pv][at(meta)..at(meta) + SECTOR as usize].copy_from_slice(&dm_raid_sb(5, 2, 16, 0));
+        }
+        let c = chunk as usize;
+        for (k, src) in data.chunks(c).enumerate() {
+            let (stripe, i) = (k as u64 / 2, k as u64 % 2);
+            let (dd, _, _) = crate::md::parity_map(5, 2, 3, stripe, i);
+            let (pv, first) = images[dd];
+            let o = at(first) + (stripe * chunk) as usize;
+            pvs[pv][o..o + c].copy_from_slice(src);
+        }
+        let devs: Vec<Mem> = pvs.into_iter().map(Mem).collect();
+        let lv = LogicalVolume::open(devs, "r").unwrap();
+        assert_eq!(read_all(&lv), data);
+        // Unaligned, across a chunk boundary and an image boundary.
+        let mut part = vec![0u8; 3 * c + 7];
+        lv.read_at(chunk - 3, &mut part).unwrap();
+        assert_eq!(part[..], data[c - 3..][..part.len()]);
+    }
+
+    #[test]
+    fn a_raid_segment_without_a_dm_raid_superblock_or_of_another_level_is_refused() {
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 2\ntype = \"raid1\"\n\
+             device_count = 1\nraids = [\"r_rmeta_0\", \"r_rimage_0\"]\n}}\n}}\n\
+             t {{\nid = \"t\"\nsegment1 {{\nstart_extent = 0\nextent_count = 2\ntype = \"raid10\"\n\
+             device_count = 1\nraids = [\"r_rmeta_0\", \"r_rimage_0\"]\n}}\n}}\n{}{}",
+            sub_lv("r_rmeta_0", "pv0", 10, 1),
+            sub_lv("r_rimage_0", "pv0", 41, 2),
+        );
+        let text = vg_text(5, &lvs);
+        let pvs = || {
+            vec![
+                Mem(pv_image(&uuid(0), &text, MDA_HEADER_SIZE)),
+                Mem(pv_image(&uuid(1), &text, MDA_HEADER_SIZE)),
+            ]
+        };
+        assert!(matches!(
+            LogicalVolume::open(pvs(), "r"),
+            Err(LvmError::Corrupt(_))
+        ));
+        assert!(matches!(
+            LogicalVolume::open(pvs(), "t"),
+            Err(LvmError::Unsupported(_))
         ));
     }
 }

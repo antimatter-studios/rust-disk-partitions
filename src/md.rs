@@ -502,7 +502,7 @@ fn read_superblock_of<R: BlockRead + ?Sized>(
 }
 
 /// Where a RAID5/6 chunk lives: (data member, parity member, Q member).
-fn parity_map(
+pub(crate) fn parity_map(
     level: i32,
     layout: u32,
     n: u64,
