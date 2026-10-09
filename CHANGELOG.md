@@ -8,6 +8,13 @@ never does.
 
 ### Added
 
+- **LVM volumes with `raid1`, `raid4`, `raid5`, `raid6` and `mirror` segments
+  are read (#166).** Each image is a hidden sub-volume. The array's level,
+  layout, chunk and data offset come from the dm-raid superblock in its
+  metadata sub-volume, which is what the kernel was given, and raid5 and
+  raid6 chunks are placed by the md parity map. Checked byte for byte against
+  volumes lvm2 built and the kernel filled. A degraded array, `raid10`, and
+  thin, cache and snapshot segments stay refused.
 - **md arrays and LVM logical volumes open through the C ABI (#164).**
   `partitions_md_assemble` assembles an array from N device handles and
   `partitions_lvm_open` opens a logical volume by name; each returns one
