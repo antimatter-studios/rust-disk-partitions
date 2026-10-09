@@ -12,7 +12,14 @@ never does.
   dm-raid over md's raid10 personality in the near layout; each chunk is
   read from its first near copy, placed by md's own RAID10 geometry. Checked
   byte for byte against a volume lvm2 built and the kernel filled. dm-raid's
-  far and offset layouts, and a degraded array, stay refused.
+  far and offset layouts stay refused.
+- **LVM raid and mirror volumes are read with images missing (#166).** An
+  image whose PV was not given is read around as md reads around a missing
+  member: from another mirror or raid10 copy, or rebuilt from raid5 parity
+  or raid6 P and Q, sharing md's own reconstruction. A volume missing more
+  images than its level survives names the missing PV. Checked against the
+  kernel's bytes with each PV of the oracle left out, and every pair for
+  raid6.
 
 ## [0.6.1] — 2026-10-09
 

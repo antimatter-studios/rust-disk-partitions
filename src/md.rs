@@ -752,7 +752,7 @@ impl Raid10 {
 
     /// Every place array chunk `c` is kept, primary copy first, as
     /// (slot, chunk row on that member), over `d` members.
-    fn copies(&self, d: u64, c: u64) -> Vec<(usize, u64)> {
+    pub(crate) fn copies(&self, d: u64, c: u64) -> Vec<(usize, u64)> {
         let mut out = Vec::with_capacity((self.near * self.far) as usize);
         for i in 0..self.near {
             let at = c * self.near + i;
@@ -1140,122 +1140,183 @@ impl<R: BlockRead> MdArray<R> {
     }
 
     fn read_chunk(&self, k: u64, within: u64, buf: &mut [u8]) -> fs_core::Result<()> {
-        let n = self.slots.len() as u64;
-        if let Some(geo) = &self.raid10 {
-            let mut last = None;
-            for (slot, row) in geo.copies(n, k) {
-                match self.read_member(slot, row * self.chunk + within, buf) {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {}
-                    Err(e) => last = Some(e),
-                }
-            }
-            return Err(last.unwrap_or_else(|| {
-                fs_core::Error::Custom(format!("md: no copy of chunk {k} is present"))
-            }));
-        }
-        let parity = if self.level == LEVEL_RAID6 { 2 } else { 1 };
-        let data = n - parity;
-        let stripe = k / data;
-        let layout = if self.level == LEVEL_RAID4 {
-            LAYOUT_PARITY_LAST
-        } else {
-            self.layout
+        let striping = Striping {
+            level: self.level,
+            layout: self.layout,
+            chunk: self.chunk,
+            members: self.slots.len() as u64,
+            raid10: self.raid10,
         };
-        let (dd, _pd, qd) = parity_map(self.level, layout, n, stripe, k % data);
-        let off = stripe * self.chunk + within;
-        if self.read_member(dd, off, buf)? {
-            return Ok(());
-        }
-        if self.level == LEVEL_RAID6 {
-            return self.rebuild_raid6(stripe, k % data, off, buf);
-        }
-        // The data member is missing: XOR every other member in the row.
-        buf.fill(0);
-        let mut tmp = vec![0u8; buf.len()];
-        for slot in 0..n as usize {
-            if slot == dd || Some(slot) == qd {
-                continue;
-            }
-            if !self.read_member(slot, off, &mut tmp)? {
-                return Err(fs_core::Error::Custom(format!(
-                    "md: slot {slot} missing while reconstructing slot {dd}"
-                )));
-            }
-            for (b, t) in buf.iter_mut().zip(&tmp) {
-                *b ^= t;
-            }
-        }
-        Ok(())
+        read_chunk(
+            &striping,
+            &|slot, off, b| self.read_member(slot, off, b),
+            k,
+            within,
+            buf,
+        )
     }
 }
 
-impl<R: BlockRead> MdArray<R> {
-    /// Rebuild data chunk `x` of RAID6 row `stripe`, whose member is
-    /// missing, from what the row still holds: through P when every other
-    /// data chunk is there, through Q when P is missing too, and through
-    /// both when a second data chunk is missing.
-    fn rebuild_raid6(&self, stripe: u64, x: u64, off: u64, buf: &mut [u8]) -> fs_core::Result<()> {
-        let n = self.slots.len() as u64;
-        let len = buf.len();
-        let (_, pd, qd) = parity_map(LEVEL_RAID6, self.layout, n, stripe, 0);
-        let qd = qd.expect("a RAID6 row has Q");
-        // P and Q with every data chunk that is present taken back out,
-        // leaving only the missing chunks' contributions.
-        let mut p = vec![0u8; len];
-        let mut q = vec![0u8; len];
-        let have_p = self.read_member(pd, off, &mut p)?;
-        let have_q = self.read_member(qd, off, &mut q)?;
-        let mut missing = Vec::new();
-        let mut d = vec![0u8; len];
-        for i in 0..n - 2 {
-            let (slot, _, _) = parity_map(LEVEL_RAID6, self.layout, n, stripe, i);
-            if !self.read_member(slot, off, &mut d)? {
-                missing.push(i);
-                continue;
-            }
-            let g = gf_pow2(q_exponent(self.layout, n, stripe, i));
-            for ((pb, qb), &db) in p.iter_mut().zip(q.iter_mut()).zip(&d) {
-                *pb ^= db;
-                *qb ^= gf_mul(g, db);
+/// How a RAID4, 5, 6 or 10 array places its chunks over its members:
+/// what [`read_chunk`] needs, whoever keeps the members.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Striping {
+    /// md level: 4, 5, 6 or 10.
+    pub(crate) level: i32,
+    /// md layout (unused at level 10, which reads `raid10`).
+    pub(crate) layout: u32,
+    /// Chunk size in bytes.
+    pub(crate) chunk: u64,
+    /// Member count, present or not.
+    pub(crate) members: u64,
+    /// Level 10 only.
+    pub(crate) raid10: Option<Raid10>,
+}
+
+/// Reads `buf.len()` bytes `off` into member `slot`'s data, or says
+/// `false` without reading when that member is missing.
+pub(crate) type ReadMember<'a> = dyn Fn(usize, u64, &mut [u8]) -> fs_core::Result<bool> + 'a;
+
+/// Read `buf` from array chunk `k`, starting `within` bytes into it and
+/// not past its end, through `member`. A chunk whose member is missing
+/// is read from another RAID10 copy, or rebuilt from the rest of its row:
+/// through P at RAID4 and RAID5, and through P, Q or both at RAID6.
+pub(crate) fn read_chunk(
+    s: &Striping,
+    member: &ReadMember<'_>,
+    k: u64,
+    within: u64,
+    buf: &mut [u8],
+) -> fs_core::Result<()> {
+    let n = s.members;
+    if let Some(geo) = &s.raid10 {
+        let mut last = None;
+        // The primary copy first, without building the list of every
+        // copy: it is the one present on any array that is not degraded.
+        let (slot, row) = geo.primary(n, k);
+        match member(slot, row * s.chunk + within, buf) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) => last = Some(e),
+        }
+        for (slot, row) in geo.copies(n, k).into_iter().skip(1) {
+            match member(slot, row * s.chunk + within, buf) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(e) => last = Some(e),
             }
         }
-        let lost = || {
-            fs_core::Error::Custom(format!(
-                "md: RAID6 row {stripe} has lost data chunks {missing:?}, P present {have_p}, Q present {have_q}"
-            ))
-        };
-        match missing.as_slice() {
-            [_] if have_p => buf.copy_from_slice(&p),
-            [_] if have_q => {
-                // Q' = {02}^ex . D_x, ex being D_x's number in Q.
-                let inv = gf_pow2(-q_exponent(self.layout, n, stripe, x));
-                for (b, &qb) in buf.iter_mut().zip(&q) {
-                    *b = gf_mul(inv, qb);
-                }
-            }
-            &[a, b] if have_p && have_q => {
-                let y = if a == x { b } else { a };
-                let ex = q_exponent(self.layout, n, stripe, x);
-                let ey = q_exponent(self.layout, n, stripe, y);
-                // P' = D_x + D_y and Q' = g^ex D_x + g^ey D_y, so
-                // D_x = A P' + B Q' with A = g^(ey-ex) / (g^(ey-ex) + 1)
-                // and B = g^(-ex) / (g^(ey-ex) + 1).
-                let gyx = gf_pow2(ey - ex);
-                if gyx ^ 1 == 0 {
-                    return Err(lost());
-                }
-                let denom = gf_inv(gyx ^ 1);
-                let ca = gf_mul(gyx, denom);
-                let cb = gf_mul(gf_pow2(-ex), denom);
-                for ((out, &pb), &qb) in buf.iter_mut().zip(&p).zip(&q) {
-                    *out = gf_mul(ca, pb) ^ gf_mul(cb, qb);
-                }
-            }
-            _ => return Err(lost()),
-        }
-        Ok(())
+        return Err(last.unwrap_or_else(|| {
+            fs_core::Error::Custom(format!("md: no copy of chunk {k} is present"))
+        }));
     }
+    let parity = if s.level == LEVEL_RAID6 { 2 } else { 1 };
+    let data = n - parity;
+    let stripe = k / data;
+    let layout = if s.level == LEVEL_RAID4 {
+        LAYOUT_PARITY_LAST
+    } else {
+        s.layout
+    };
+    let (dd, _pd, qd) = parity_map(s.level, layout, n, stripe, k % data);
+    let off = stripe * s.chunk + within;
+    if member(dd, off, buf)? {
+        return Ok(());
+    }
+    if s.level == LEVEL_RAID6 {
+        return rebuild_raid6(s, member, stripe, k % data, off, buf);
+    }
+    // The data member is missing: XOR every other member in the row.
+    buf.fill(0);
+    let mut tmp = vec![0u8; buf.len()];
+    for slot in 0..n as usize {
+        if slot == dd || Some(slot) == qd {
+            continue;
+        }
+        if !member(slot, off, &mut tmp)? {
+            return Err(fs_core::Error::Custom(format!(
+                "md: slot {slot} missing while reconstructing slot {dd}"
+            )));
+        }
+        for (b, t) in buf.iter_mut().zip(&tmp) {
+            *b ^= t;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuild data chunk `x` of RAID6 row `stripe`, whose member is
+/// missing, from what the row still holds: through P when every other
+/// data chunk is there, through Q when P is missing too, and through
+/// both when a second data chunk is missing.
+fn rebuild_raid6(
+    s: &Striping,
+    member: &ReadMember<'_>,
+    stripe: u64,
+    x: u64,
+    off: u64,
+    buf: &mut [u8],
+) -> fs_core::Result<()> {
+    let n = s.members;
+    let layout = s.layout;
+    let len = buf.len();
+    let (_, pd, qd) = parity_map(LEVEL_RAID6, layout, n, stripe, 0);
+    let qd = qd.expect("a RAID6 row has Q");
+    // P and Q with every data chunk that is present taken back out,
+    // leaving only the missing chunks' contributions.
+    let mut p = vec![0u8; len];
+    let mut q = vec![0u8; len];
+    let have_p = member(pd, off, &mut p)?;
+    let have_q = member(qd, off, &mut q)?;
+    let mut missing = Vec::new();
+    let mut d = vec![0u8; len];
+    for i in 0..n - 2 {
+        let (slot, _, _) = parity_map(LEVEL_RAID6, layout, n, stripe, i);
+        if !member(slot, off, &mut d)? {
+            missing.push(i);
+            continue;
+        }
+        let g = gf_pow2(q_exponent(layout, n, stripe, i));
+        for ((pb, qb), &db) in p.iter_mut().zip(q.iter_mut()).zip(&d) {
+            *pb ^= db;
+            *qb ^= gf_mul(g, db);
+        }
+    }
+    let lost = || {
+        fs_core::Error::Custom(format!(
+            "md: RAID6 row {stripe} has lost data chunks {missing:?}, P present {have_p}, Q present {have_q}"
+        ))
+    };
+    match missing.as_slice() {
+        [_] if have_p => buf.copy_from_slice(&p),
+        [_] if have_q => {
+            // Q' = {02}^ex . D_x, ex being D_x's number in Q.
+            let inv = gf_pow2(-q_exponent(layout, n, stripe, x));
+            for (b, &qb) in buf.iter_mut().zip(&q) {
+                *b = gf_mul(inv, qb);
+            }
+        }
+        &[a, b] if have_p && have_q => {
+            let y = if a == x { b } else { a };
+            let ex = q_exponent(layout, n, stripe, x);
+            let ey = q_exponent(layout, n, stripe, y);
+            // P' = D_x + D_y and Q' = g^ex D_x + g^ey D_y, so
+            // D_x = A P' + B Q' with A = g^(ey-ex) / (g^(ey-ex) + 1)
+            // and B = g^(-ex) / (g^(ey-ex) + 1).
+            let gyx = gf_pow2(ey - ex);
+            if gyx ^ 1 == 0 {
+                return Err(lost());
+            }
+            let denom = gf_inv(gyx ^ 1);
+            let ca = gf_mul(gyx, denom);
+            let cb = gf_mul(gf_pow2(-ex), denom);
+            for ((out, &pb), &qb) in buf.iter_mut().zip(&p).zip(&q) {
+                *out = gf_mul(ca, pb) ^ gf_mul(cb, qb);
+            }
+        }
+        _ => return Err(lost()),
+    }
+    Ok(())
 }
 
 impl<R: BlockRead> BlockRead for MdArray<R> {

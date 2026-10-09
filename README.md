@@ -43,7 +43,9 @@ It does **not** mount anything, decode files, or write — it's a probe.
       spanning two md arrays as SHR builds it, and the newer of a PV's two
       metadata copies (`--pvmetadatacopies 2`), and `raid1`, `raid4`,
       `raid5`, `raid6`, `raid10` (near layout) and `mirror` segments
-      through their hidden image sub-volumes, with every image present.
+      through their hidden image sub-volumes, and with images missing as
+      far as each level survives: read from another copy or rebuilt from
+      parity.
       Other segment types (thin, cache, snapshot, vdo) are refused by name
 - [x] Discovery: `md::scan` sorts a set of devices into the arrays they
       are members of, `lvm::scan` sorts PVs (raw devices, slices or

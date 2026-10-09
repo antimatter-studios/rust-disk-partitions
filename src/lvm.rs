@@ -901,8 +901,9 @@ struct RaidMap {
     chunk: u64,
     /// Where the data starts on each image, in bytes.
     data_offset: u64,
-    /// Each image's runs, in image order.
-    images: Vec<Vec<Run>>,
+    /// Each image's runs, in image order; `None` for an image on a PV
+    /// that was not given, read around as md reads a missing member.
+    images: Vec<Option<Vec<Run>>>,
 }
 
 /// dm-raid's on-disk superblock, at the start of each `rmeta` sub-volume:
@@ -953,6 +954,23 @@ fn parse_dm_raid_super(b: &[u8], what: &str) -> Result<DmRaidSuper, LvmError> {
     })
 }
 
+/// Whether a dm-raid or mirror segment at md `level` can be read with
+/// `images` present where `Some`: one image at level 1, one copy of every
+/// chunk at level 10, and all but one or two images at levels 5 and 6.
+fn survives(level: i32, raid10: Option<crate::md::Raid10>, images: &[Option<Vec<Run>>]) -> bool {
+    let n = images.len() as u64;
+    let present = |slot: usize| images[slot].is_some();
+    let missing = images.iter().filter(|i| i.is_none()).count();
+    match (level, raid10) {
+        (1, _) => missing < images.len(),
+        // The copies of chunk c fall on the same images as those of
+        // chunk c + n, so n chunks show every combination.
+        (10, Some(geo)) => (0..n).all(|c| geo.copies(n, c).iter().any(|&(s, _)| present(s))),
+        (6, _) => missing <= 2,
+        _ => missing <= 1,
+    }
+}
+
 /// What resolving a volume's segments needs from the group and devices.
 struct Mapper<'a, R: BlockRead> {
     vg: &'a VolumeGroup,
@@ -993,14 +1011,20 @@ impl<R: BlockRead> Mapper<'_, R> {
                 .ok_or_else(|| LvmError::Corrupt("segment size overflows".into()))?;
             let map = match seg.kind.as_str() {
                 "striped" => self.striped(name, seg)?,
-                "mirror" => Map::Raid(Box::new(RaidMap {
-                    level: 1,
-                    raid10: None,
-                    layout: 0,
-                    chunk: 0,
-                    data_offset: 0,
-                    images: self.images(seg, depth)?,
-                })),
+                "mirror" => {
+                    let (images, gone) = self.images(seg, depth)?;
+                    if !survives(1, None, &images) {
+                        return Err(gone.expect("an image is missing"));
+                    }
+                    Map::Raid(Box::new(RaidMap {
+                        level: 1,
+                        raid10: None,
+                        layout: 0,
+                        chunk: 0,
+                        data_offset: 0,
+                        images,
+                    }))
+                }
                 kind if kind == "raid1"
                     || kind == "raid10"
                     || kind == "raid4"
@@ -1025,16 +1049,33 @@ impl<R: BlockRead> Mapper<'_, R> {
         Ok((runs, next * ext))
     }
 
-    fn images(&self, seg: &Segment, depth: u32) -> Result<Vec<Vec<Run>>, LvmError> {
+    /// Each image's runs, `None` for an image on a PV that was not given,
+    /// and the first such PV's error, which is the answer when too many
+    /// images are missing for the volume to be read.
+    #[allow(clippy::type_complexity)]
+    fn images(
+        &self,
+        seg: &Segment,
+        depth: u32,
+    ) -> Result<(Vec<Option<Vec<Run>>>, Option<LvmError>), LvmError> {
         if seg.images.is_empty() {
             return Err(LvmError::Corrupt(
                 "a raid or mirror segment with no images".into(),
             ));
         }
-        seg.images
-            .iter()
-            .map(|image| self.map(image, depth + 1).map(|(runs, _)| runs))
-            .collect()
+        let mut gone = None;
+        let mut images = Vec::with_capacity(seg.images.len());
+        for image in &seg.images {
+            match self.map(image, depth + 1) {
+                Ok((runs, _)) => images.push(Some(runs)),
+                Err(e @ LvmError::MissingPv(_)) => {
+                    gone.get_or_insert(e);
+                    images.push(None);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok((images, gone))
     }
 
     fn raid(&self, name: &str, seg: &Segment, depth: u32) -> Result<Map, LvmError> {
@@ -1045,14 +1086,29 @@ impl<R: BlockRead> Mapper<'_, R> {
                 seg.metadata.len()
             )));
         }
+        let (images, gone) = self.images(seg, depth)?;
+        let n = images.len() as u64;
         // Every image's superblock describes the array; the first one
         // present is read, and the rest are not needed to place data.
-        let (meta_runs, _) = self.map(&seg.metadata[0], depth + 1)?;
-        let mut b = [0u8; dm_raid::SIZE];
-        read_runs(self.devices, &meta_runs, 0, &mut b).map_err(LvmError::Block)?;
-        let sb = parse_dm_raid_super(&b, &seg.metadata[0])?;
-        let images = self.images(seg, depth)?;
-        let n = images.len() as u64;
+        let mut sb = None;
+        let mut meta_gone = None;
+        for meta in &seg.metadata {
+            match self.map(meta, depth + 1) {
+                Ok((meta_runs, _)) => {
+                    let mut b = [0u8; dm_raid::SIZE];
+                    read_runs(self.devices, &meta_runs, 0, &mut b).map_err(LvmError::Block)?;
+                    sb = Some(parse_dm_raid_super(&b, meta)?);
+                    break;
+                }
+                Err(e @ LvmError::MissingPv(_)) => {
+                    meta_gone.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let Some(sb) = sb else {
+            return Err(meta_gone.expect("images and metadata are as many, and not none"));
+        };
         let (level, parity) = match sb.level {
             1 => (1, 0),
             4 | 5 => (5, 1),
@@ -1087,6 +1143,9 @@ impl<R: BlockRead> Mapper<'_, R> {
                 "{name}: raid{} with {n} images and a {}-byte chunk",
                 sb.level, sb.chunk
             )));
+        }
+        if !survives(level, raid10, &images) {
+            return Err(gone.expect("an image is missing"));
         }
         Ok(Map::Raid(Box::new(RaidMap {
             level,
@@ -1198,39 +1257,51 @@ fn read_runs<R: BlockRead>(
                 take
             }
             Map::Raid(raid) => {
-                let (image, at, take) = if raid.level == 1 {
-                    (0, raid.data_offset + within, want)
-                } else if let Some(geo) = raid.raid10 {
-                    let c = within / raid.chunk;
-                    let inner = within % raid.chunk;
-                    let (slot, row) = geo.primary(raid.images.len() as u64, c);
-                    (
-                        slot,
-                        raid.data_offset + row * raid.chunk + inner,
-                        ((raid.chunk - inner) as usize).min(want),
-                    )
-                } else {
-                    let n = raid.images.len() as u64;
-                    let parity = if raid.level == 6 { 2 } else { 1 };
-                    let data = n - parity;
-                    let c = within / raid.chunk;
-                    let inner = within % raid.chunk;
-                    let stripe = c / data;
-                    let (dd, _, _) =
-                        crate::md::parity_map(raid.level, raid.layout, n, stripe, c % data);
-                    (
-                        dd,
-                        raid.data_offset + stripe * raid.chunk + inner,
-                        ((raid.chunk - inner) as usize).min(want),
-                    )
+                // An image's data region, as md reads a member: `false`,
+                // without reading, for an image whose PV was not given.
+                let member = |slot: usize, off: u64, b: &mut [u8]| -> fs_core::Result<bool> {
+                    match &raid.images[slot] {
+                        Some(runs) => {
+                            read_runs(devices, runs, raid.data_offset + off, b).map(|()| true)
+                        }
+                        None => Ok(false),
+                    }
                 };
-                read_runs(
-                    devices,
-                    &raid.images[image],
-                    at,
-                    &mut buf[done..done + take],
-                )?;
-                take
+                if raid.level == 1 {
+                    let mut read = Err(fs_core::Error::Custom(
+                        "no image of the mirror is present".into(),
+                    ));
+                    for slot in 0..raid.images.len() {
+                        match member(slot, within, &mut buf[done..done + want]) {
+                            Ok(true) => {
+                                read = Ok(());
+                                break;
+                            }
+                            Ok(false) => {}
+                            Err(e) => read = Err(e),
+                        }
+                    }
+                    read?;
+                    want
+                } else {
+                    let inner = within % raid.chunk;
+                    let take = ((raid.chunk - inner) as usize).min(want);
+                    let striping = crate::md::Striping {
+                        level: raid.level,
+                        layout: raid.layout,
+                        chunk: raid.chunk,
+                        members: raid.images.len() as u64,
+                        raid10: raid.raid10,
+                    };
+                    crate::md::read_chunk(
+                        &striping,
+                        &member,
+                        within / raid.chunk,
+                        inner,
+                        &mut buf[done..done + take],
+                    )?;
+                    take
+                }
             }
         };
         done += take;
@@ -1264,8 +1335,12 @@ impl<R: BlockRead> LogicalVolume<R> {
     /// `raid5*`, `raid6*`, `raid10` (near layout) and `mirror` ones,
     /// through their hidden image sub-volumes. A dm-raid segment's level, layout, chunk and data
     /// offset come from the dm-raid superblock in its first metadata
-    /// sub-volume, which is what the kernel was given. Every image must
-    /// be present; other segment types are refused by name.
+    /// sub-volume, which is what the kernel was given. An image whose PV
+    /// is not among `devices` is read around, as md reads around a
+    /// missing member: from another copy, or rebuilt from parity. A
+    /// volume missing more images than its level survives, and one whose
+    /// unmirrored segments lie on a missing PV, is refused with the PV
+    /// named. Other segment types are refused by name.
     pub fn open(devices: Vec<R>, name: &str) -> Result<Self, LvmError> {
         let vg = read_volume_group(&devices)?;
         // PV key -> device index, by matching the label UUID.
