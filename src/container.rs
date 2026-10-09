@@ -59,8 +59,23 @@ impl std::error::Error for ContainerError {
 }
 
 /// Which container `dev` is, if any.
-pub fn detect<R: BlockRead + ?Sized>(_dev: &R) -> Result<Option<Container>, ContainerError> {
-    let _ = (md::MD_MAGIC, lvm::lvm_crc(&[]));
+///
+/// An `md` superblock is looked for first. A member whose data starts at
+/// byte 0 (metadata 0.90 and 1.0) carries the
+/// array's own first bytes, so it can show a PV label or a filesystem as
+/// well; what the device *is* is the member. A superblock or label that
+/// is there but damaged is an error rather than `None`, so a damaged
+/// member is not taken for a blank device.
+pub fn detect<R: BlockRead + ?Sized>(dev: &R) -> Result<Option<Container>, ContainerError> {
+    if let Some(sb) = md::read_superblock(dev).map_err(ContainerError::Md)? {
+        return Ok(Some(Container::MdMember {
+            array_uuid: sb.array_uuid,
+            level: sb.level,
+        }));
+    }
+    if let Some(label) = lvm::read_pv_label(dev).map_err(ContainerError::Lvm)? {
+        return Ok(Some(Container::LvmPv { uuid: label.uuid }));
+    }
     Ok(None)
 }
 

@@ -712,12 +712,45 @@ impl<R: BlockRead> MdGroup<R> {
 }
 
 /// Sort `devices` into the arrays they are members of.
+///
+/// Nothing is assembled and nothing is refused for being incomplete: a
+/// group with too few members still comes back, and
+/// [`MdGroup::assemble`] says whether the level can read it. A member
+/// whose event count is behind stays in its group, since assembly sets
+/// it aside itself. Errors in `refused` name a device by its position in
+/// `devices`.
 pub fn scan<R: BlockRead>(devices: Vec<R>) -> MdScan<R> {
-    MdScan {
+    let mut found = MdScan {
         arrays: Vec::new(),
-        others: devices,
+        others: Vec::new(),
         refused: Vec::new(),
+    };
+    for (member, dev) in devices.into_iter().enumerate() {
+        match read_superblock_of(&dev, member) {
+            Ok(None) => found.others.push(dev),
+            Err(e) => found.refused.push((dev, e)),
+            Ok(Some(sb)) => {
+                match found
+                    .arrays
+                    .iter_mut()
+                    .find(|g| g.array_uuid == sb.array_uuid)
+                {
+                    Some(group) => {
+                        if sb.events > group.superblock.events {
+                            group.superblock = sb;
+                        }
+                        group.members.push(dev);
+                    }
+                    None => found.arrays.push(MdGroup {
+                        array_uuid: sb.array_uuid,
+                        superblock: sb,
+                        members: vec![dev],
+                    }),
+                }
+            }
+        }
     }
+    found
 }
 
 impl<R: BlockRead> MdArray<R> {

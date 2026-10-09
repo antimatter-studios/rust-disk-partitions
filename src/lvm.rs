@@ -705,13 +705,78 @@ pub struct VolumeGroupDevices<R> {
 }
 
 /// Sort `devices` into the volume groups they are physical volumes of.
+///
+/// A PV belongs to the group whose newest metadata, among the devices
+/// given, names its label's UUID, so a PV that keeps no metadata of its
+/// own (`--pvmetadatacopies 0`) is still placed. Give `md` arrays here
+/// assembled, not their members: a member whose data starts at byte 0
+/// shows the array's PV label too. Errors in `refused` name a device by
+/// its position in `devices`.
 pub fn scan<R: BlockRead>(devices: Vec<R>) -> LvmScan<R> {
-    LvmScan {
+    let mut found = LvmScan {
         volume_groups: Vec::new(),
         unclaimed: Vec::new(),
-        others: devices,
+        others: Vec::new(),
         refused: Vec::new(),
+    };
+    // Each labelled PV with its UUID, and the newest metadata of each
+    // group, in the order the groups were first met.
+    let mut pvs: Vec<(R, String)> = Vec::new();
+    let mut groups: Vec<VolumeGroup> = Vec::new();
+    for (i, dev) in devices.into_iter().enumerate() {
+        let label = match read_pv_label_of(&dev, i) {
+            Ok(Some(label)) => label,
+            Ok(None) => {
+                found.others.push(dev);
+                continue;
+            }
+            Err(e) => {
+                found.refused.push((dev, e));
+                continue;
+            }
+        };
+        let vg = read_metadata_text_of(&dev, &label, i).and_then(|text| match text {
+            Some(text) => VolumeGroup::from_metadata(&parse_metadata(&text)?).map(Some),
+            None => Ok(None),
+        });
+        match vg {
+            Err(e) => found.refused.push((dev, e)),
+            Ok(vg) => {
+                if let Some(vg) = vg {
+                    match groups.iter_mut().find(|g| g.id == vg.id) {
+                        Some(g) if vg.seqno > g.seqno => *g = vg,
+                        Some(_) => {}
+                        None => groups.push(vg),
+                    }
+                }
+                pvs.push((dev, label.uuid));
+            }
+        }
     }
+    // Each group's PVs with their UUIDs, so the PVs its metadata names
+    // and nobody gave can be listed.
+    let mut members: Vec<Vec<(R, String)>> = groups.iter().map(|_| Vec::new()).collect();
+    for (dev, uuid) in pvs {
+        let named = |g: &VolumeGroup| g.physical_volumes.iter().any(|pv| pv.uuid == uuid);
+        match groups.iter().position(named) {
+            Some(i) => members[i].push((dev, uuid)),
+            None => found.unclaimed.push(dev),
+        }
+    }
+    for (volume_group, given) in groups.into_iter().zip(members) {
+        let missing = volume_group
+            .physical_volumes
+            .iter()
+            .filter(|pv| !given.iter().any(|(_, uuid)| *uuid == pv.uuid))
+            .map(|pv| pv.name.clone())
+            .collect();
+        found.volume_groups.push(VolumeGroupDevices {
+            volume_group,
+            devices: given.into_iter().map(|(dev, _)| dev).collect(),
+            missing,
+        });
+    }
+    found
 }
 
 /// One mapped run of a logical volume, resolved to device indexes.
