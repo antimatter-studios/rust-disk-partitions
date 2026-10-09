@@ -57,7 +57,10 @@ make_case() {
         loops+=("$(losetup --find --show "$dir/member-$s.img")")
     done
     md=/dev/md$next_md
-    next_md=$((next_md + 1))
+    # mdadm refuses a device number past 127 ("cannot be set as devname"),
+    # and every array is stopped before the next is made, so the numbers
+    # go round 100..127 rather than climbing past the limit.
+    next_md=$((next_md == 127 ? 100 : next_md + 1))
     # Members are listed in slot order, so member-<s> is slot s. Not
     # --quiet: it also silences why mdadm refused a geometry, and a create
     # that fails must say why.
