@@ -6,6 +6,14 @@ never does.
 
 ## [Unreleased]
 
+### Added
+
+- **LVM volumes with `raid10` segments are read (#166).** lvm2's raid10 is
+  dm-raid over md's raid10 personality in the near layout; each chunk is
+  read from its first near copy, placed by md's own RAID10 geometry. Checked
+  byte for byte against a volume lvm2 built and the kernel filled. dm-raid's
+  far and offset layouts, and a degraded array, stay refused.
+
 ## [0.6.1] — 2026-10-09
 
 Everything here adds to the public surface; nothing a consumer already builds

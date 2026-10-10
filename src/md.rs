@@ -717,7 +717,7 @@ fn raid0_zones(sizes: &[u64]) -> Vec<Zone> {
 
 /// A RAID10 layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Raid10 {
+pub(crate) struct Raid10 {
     /// Copies placed side by side on consecutive members.
     near: u64,
     /// Copies placed further down the members.
@@ -730,6 +730,26 @@ struct Raid10 {
 }
 
 impl Raid10 {
+    /// The "near" layout: `near` copies side by side on consecutive
+    /// members, and no far copy. What lvm2's `raid10` builds.
+    pub(crate) fn near(near: u64) -> Self {
+        Raid10 {
+            near,
+            far: 1,
+            offset: false,
+            stride: 0,
+        }
+    }
+
+    /// Where array chunk `c`'s primary copy is, over `d` members:
+    /// `copies(d, c)[0]`, without building the rest.
+    pub(crate) fn primary(&self, d: u64, c: u64) -> (usize, u64) {
+        let at = c * self.near;
+        let row = at / d;
+        let row = if self.offset { row * self.far } else { row };
+        ((at % d) as usize, row)
+    }
+
     /// Every place array chunk `c` is kept, primary copy first, as
     /// (slot, chunk row on that member), over `d` members.
     fn copies(&self, d: u64, c: u64) -> Vec<(usize, u64)> {
@@ -1903,5 +1923,31 @@ pub(crate) mod tests {
         assert_eq!(found.arrays[0].members.len(), 1);
         assert_eq!(found.refused.len(), 1);
         assert!(matches!(found.refused[0].1, MdError::BadChecksum { .. }));
+    }
+    /// `primary` is the first of `copies`, for near, far and offset
+    /// layouts over member counts that do and do not divide the copies.
+    #[test]
+    fn a_raid10_chunks_primary_copy_is_the_first_of_its_copies() {
+        for d in 2..=7u64 {
+            for (near, far, offset) in [(1, 2, false), (2, 1, false), (2, 2, true), (3, 1, false)] {
+                if near * far > d {
+                    continue;
+                }
+                let geo = Raid10 {
+                    near,
+                    far,
+                    offset,
+                    stride: 11,
+                };
+                for c in 0..40 {
+                    assert_eq!(
+                        geo.primary(d, c),
+                        geo.copies(d, c)[0],
+                        "{geo:?} d={d} c={c}"
+                    );
+                }
+            }
+        }
+        assert_eq!(Raid10::near(2).copies(3, 1), vec![(2, 0), (0, 1)]);
     }
 }

@@ -889,10 +889,12 @@ enum Map {
 
 /// A dm-raid or dm-mirror segment, as the kernel lays it out.
 struct RaidMap {
-    /// md level: 1 (also `mirror`), 5 or 6. raid4 is read as level 5
+    /// md level: 1 (also `mirror`), 5, 6 or 10. raid4 is read as level 5
     /// with its parity-first or parity-last layout, which is how md
     /// places those.
     level: i32,
+    /// Level 10 only: where md's raid10 personality keeps each chunk.
+    raid10: Option<crate::md::Raid10>,
     /// md layout, as the dm-raid superblock records it.
     layout: u32,
     /// Chunk size in bytes (unused at level 1).
@@ -993,12 +995,14 @@ impl<R: BlockRead> Mapper<'_, R> {
                 "striped" => self.striped(name, seg)?,
                 "mirror" => Map::Raid(Box::new(RaidMap {
                     level: 1,
+                    raid10: None,
                     layout: 0,
                     chunk: 0,
                     data_offset: 0,
                     images: self.images(seg, depth)?,
                 })),
                 kind if kind == "raid1"
+                    || kind == "raid10"
                     || kind == "raid4"
                     || kind.starts_with("raid5")
                     || kind.starts_with("raid6") =>
@@ -1053,7 +1057,30 @@ impl<R: BlockRead> Mapper<'_, R> {
             1 => (1, 0),
             4 | 5 => (5, 1),
             6 => (6, 2),
+            10 => (10, 0),
             l => return Err(LvmError::Unsupported(format!("{name}: dm-raid level {l}"))),
+        };
+        // dm-raid writes md's raid10 layout word: near copies in bits 0-7
+        // and far copies in 8-15, plus offset (bit 16) and "far sets"
+        // (bit 17, which md's own superblock never carries) for its far
+        // and offset layouts. lvm2 builds near, and near is what is read.
+        let raid10 = if level == 10 {
+            let near = u64::from(sb.layout & 0xff);
+            if sb.layout & !0xff != 1 << 8 {
+                return Err(LvmError::Unsupported(format!(
+                    "{name}: raid10 layout {:#x}; only the near layout is read, not \
+                     dm-raid's far or offset ones",
+                    sb.layout
+                )));
+            }
+            if near == 0 || near > n {
+                return Err(LvmError::Corrupt(format!(
+                    "{name}: raid10 with {near} near copies over {n} images"
+                )));
+            }
+            Some(crate::md::Raid10::near(near))
+        } else {
+            None
         };
         if level != 1 && (sb.chunk == 0 || n <= parity) {
             return Err(LvmError::Corrupt(format!(
@@ -1063,6 +1090,7 @@ impl<R: BlockRead> Mapper<'_, R> {
         }
         Ok(Map::Raid(Box::new(RaidMap {
             level,
+            raid10,
             layout: sb.layout,
             chunk: sb.chunk,
             data_offset: sb.data_offset,
@@ -1172,6 +1200,15 @@ fn read_runs<R: BlockRead>(
             Map::Raid(raid) => {
                 let (image, at, take) = if raid.level == 1 {
                     (0, raid.data_offset + within, want)
+                } else if let Some(geo) = raid.raid10 {
+                    let c = within / raid.chunk;
+                    let inner = within % raid.chunk;
+                    let (slot, row) = geo.primary(raid.images.len() as u64, c);
+                    (
+                        slot,
+                        raid.data_offset + row * raid.chunk + inner,
+                        ((raid.chunk - inner) as usize).min(want),
+                    )
                 } else {
                     let n = raid.images.len() as u64;
                     let parity = if raid.level == 6 { 2 } else { 1 };
@@ -1224,8 +1261,8 @@ impl<R: BlockRead> LogicalVolume<R> {
     /// order.
     ///
     /// `striped` segments are read, and so are `raid1`, `raid4`,
-    /// `raid5*`, `raid6*` and `mirror` ones, through their hidden image
-    /// sub-volumes. A dm-raid segment's level, layout, chunk and data
+    /// `raid5*`, `raid6*`, `raid10` (near layout) and `mirror` ones,
+    /// through their hidden image sub-volumes. A dm-raid segment's level, layout, chunk and data
     /// offset come from the dm-raid superblock in its first metadata
     /// sub-volume, which is what the kernel was given. Every image must
     /// be present; other segment types are refused by name.
@@ -1948,7 +1985,7 @@ pool = "pool_tdata"
         let lvs = format!(
             "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 2\ntype = \"raid1\"\n\
              device_count = 1\nraids = [\"r_rmeta_0\", \"r_rimage_0\"]\n}}\n}}\n\
-             t {{\nid = \"t\"\nsegment1 {{\nstart_extent = 0\nextent_count = 2\ntype = \"raid10\"\n\
+             t {{\nid = \"t\"\nsegment1 {{\nstart_extent = 0\nextent_count = 2\ntype = \"raid0\"\n\
              device_count = 1\nraids = [\"r_rmeta_0\", \"r_rimage_0\"]\n}}\n}}\n{}{}",
             sub_lv("r_rmeta_0", "pv0", 10, 1),
             sub_lv("r_rimage_0", "pv0", 41, 2),
@@ -1968,5 +2005,86 @@ pool = "pool_tdata"
             LogicalVolume::open(pvs(), "t"),
             Err(LvmError::Unsupported(_))
         ));
+    }
+    /// raid10 in md's "near" layout with two copies over three images, as
+    /// lvm2 builds it: chunk `c`'s copies are md chunks `2c` and `2c + 1`
+    /// laid round the images, so with an odd image count a chunk's two
+    /// copies start on a different image each row.
+    #[test]
+    fn a_raid10_segment_reads_the_first_near_copy_of_each_chunk() {
+        let chunk = 16 * SECTOR;
+        let data = pattern(3 * EXT, 31);
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 3\ntype = \"raid10\"\n\
+             device_count = 3\nstripe_size = 16\nraids = [\"r_rmeta_0\", \"r_rimage_0\", \"r_rmeta_1\", \
+             \"r_rimage_1\", \"r_rmeta_2\", \"r_rimage_2\"]\n}}\n}}\n{}{}{}{}{}{}",
+            sub_lv("r_rmeta_0", "pv0", 30, 1),
+            sub_lv("r_rimage_0", "pv0", 31, 3),
+            sub_lv("r_rmeta_1", "pv1", 30, 1),
+            sub_lv("r_rimage_1", "pv1", 31, 3),
+            sub_lv("r_rmeta_2", "pv0", 35, 1),
+            sub_lv("r_rimage_2", "pv0", 36, 3),
+        );
+        let text = vg_text(5, &lvs);
+        let mut pvs = [
+            pv_image(&uuid(0), &text, MDA_HEADER_SIZE),
+            pv_image(&uuid(1), &text, MDA_HEADER_SIZE),
+        ];
+        let images = [(0usize, 31u64), (1, 31), (0, 36)];
+        // near = 2, far = 1: md layout 0x102.
+        for (pv, meta) in [(0usize, 30u64), (1, 30), (0, 35)] {
+            pvs[pv][at(meta)..at(meta) + SECTOR as usize]
+                .copy_from_slice(&dm_raid_sb(10, 0x102, 16, 0));
+        }
+        let c = chunk as usize;
+        for (k, src) in data.chunks(c).enumerate() {
+            // Both copies, so whichever the reader takes holds the data.
+            for copy in 0..2u64 {
+                let at_md = k as u64 * 2 + copy;
+                let (image, row) = ((at_md % 3) as usize, at_md / 3);
+                let (pv, first) = images[image];
+                let o = at(first) + (row * chunk) as usize;
+                pvs[pv][o..o + c].copy_from_slice(src);
+            }
+        }
+        let devs: Vec<Mem> = pvs.into_iter().map(Mem).collect();
+        let lv = LogicalVolume::open(devs, "r").unwrap();
+        assert_eq!(lv.size_bytes(), 3 * EXT);
+        assert_eq!(read_all(&lv), data);
+        // Unaligned, across a chunk boundary.
+        let mut part = vec![0u8; 2 * c + 5];
+        lv.read_at(chunk - 3, &mut part).unwrap();
+        assert_eq!(part[..], data[c - 3..][..part.len()]);
+    }
+
+    /// dm-raid's far and offset raid10 layouts set "far sets" (bit 17),
+    /// which md's own superblock never carries; they are refused by name.
+    #[test]
+    fn a_raid10_segment_in_a_far_or_offset_layout_is_refused() {
+        let lvs = format!(
+            "r {{\nid = \"r\"\nsegment1 {{\nstart_extent = 0\nextent_count = 2\ntype = \"raid10\"\n\
+             device_count = 2\nstripe_size = 16\nraids = [\"r_rmeta_0\", \"r_rimage_0\", \"r_rmeta_1\", \
+             \"r_rimage_1\"]\n}}\n}}\n{}{}{}{}",
+            sub_lv("r_rmeta_0", "pv0", 30, 1),
+            sub_lv("r_rimage_0", "pv0", 31, 2),
+            sub_lv("r_rmeta_1", "pv1", 30, 1),
+            sub_lv("r_rimage_1", "pv1", 31, 2),
+        );
+        let text = vg_text(5, &lvs);
+        for layout in [(1 << 17) | 0x201, (1 << 17) | (1 << 16) | 0x201] {
+            let mut pvs = [
+                pv_image(&uuid(0), &text, MDA_HEADER_SIZE),
+                pv_image(&uuid(1), &text, MDA_HEADER_SIZE),
+            ];
+            for pv in &mut pvs {
+                pv[at(30)..at(30) + SECTOR as usize]
+                    .copy_from_slice(&dm_raid_sb(10, layout, 16, 0));
+            }
+            let devs: Vec<Mem> = pvs.into_iter().map(Mem).collect();
+            match LogicalVolume::open(devs, "r") {
+                Err(LvmError::Unsupported(why)) => assert!(why.contains("raid10"), "{why}"),
+                other => panic!("layout {layout:#x}: {other:?}"),
+            }
+        }
     }
 }
