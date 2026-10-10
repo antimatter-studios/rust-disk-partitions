@@ -47,6 +47,13 @@ fn oracle_dir() -> PathBuf {
 }
 
 fn same(what: &str, dev: &dyn BlockRead, expect_path: &Path) {
+    let bytes = matches(what, dev, expect_path);
+    println!("lvm oracle: {what} matches the kernel ({bytes} bytes)");
+}
+
+/// [`same`] without the line: every byte of `dev` is the kernel's, or the
+/// test fails naming `what`. Returns how many bytes were compared.
+fn matches(what: &str, dev: &dyn BlockRead, expect_path: &Path) -> u64 {
     let expect = fs::read(expect_path).unwrap_or_else(|e| panic!("{what}: {e}"));
     assert_eq!(
         dev.size_bytes(),
@@ -62,10 +69,7 @@ fn same(what: &str, dev: &dyn BlockRead, expect_path: &Path) {
             got[at], expect[at]
         );
     }
-    println!(
-        "lvm oracle: {what} matches the kernel ({} bytes)",
-        expect.len()
-    );
+    expect.len() as u64
 }
 
 fn pvs(dir: &Path, n: usize) -> Vec<FileBlock> {
@@ -445,4 +449,45 @@ fn raid_and_mirror_volumes_read_the_kernels_bytes() {
             &dir.join(format!("{lv}.bin")),
         );
     }
+}
+
+/// The same volumes with PVs left out, as when a disk has failed: lvm2
+/// put each image of a volume on its own PV, so one PV gone takes at most
+/// one image of each, which every one of them survives, and any two gone
+/// leave raid6 its data through P and Q. Chunks on a missing image are
+/// rebuilt from the rest of their row, or read from the other copy, and
+/// must still be the kernel's bytes.
+#[test]
+fn raid_and_mirror_volumes_missing_images_read_the_kernels_bytes() {
+    let dir = oracle_dir().join("raid");
+    let without = |gone: &[usize]| -> Vec<FileBlock> {
+        pvs(&dir, 5)
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !gone.contains(i))
+            .map(|(_, d)| d)
+            .collect()
+    };
+    let mut cases = Vec::new();
+    for gone in 0..5 {
+        for lv in ["r1", "r5", "r6", "r10", "m1"] {
+            cases.push((vec![gone], lv));
+        }
+        for other in gone + 1..5 {
+            cases.push((vec![gone, other], "r6"));
+        }
+    }
+    // One line for all of them: each case fails by name, and a line per
+    // case would be 35 lines of the tier's budget saying "matches".
+    let (mut count, mut bytes) = (0, 0);
+    for (gone, lv) in cases {
+        let what = format!("raid/{lv} without pv-{gone:?}");
+        let opened = LogicalVolume::open(without(&gone), lv);
+        let lv_reader = opened.unwrap_or_else(|e| panic!("{what}: {e}"));
+        bytes += matches(&what, &lv_reader, &dir.join(format!("{lv}.bin")));
+        count += 1;
+    }
+    println!(
+        "lvm oracle: {count} raid and mirror reads with PVs left out match the kernel ({bytes} bytes)"
+    );
 }

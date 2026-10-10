@@ -229,7 +229,11 @@ tasks:
     # naming it otherwise.
     cmds:
       - 'cargo test --locked --features oracle --test oracle_lvm --no-run'
-      - '../rust-fs-core/scripts/tier.sh "test (oracle lvm)" oracle-lvm 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_lvm -- --nocapture'
+      # Budget: 37 lines, 2626 bytes with raid10 and the five raid volumes
+      # (the oracle job of #176's run 38005491884, less the 35 per-case
+      # lines its missing-image test printed before it took one summary
+      # line), so 38 / ~2720; ~30% over that is 50 / 3550. Was 40 / 3000.
+      - '../rust-fs-core/scripts/tier.sh "test (oracle lvm)" oracle-lvm 50 3550 -- cargo test --locked --quiet --features oracle --test oracle_lvm -- --nocapture'
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle-lvm 3'
 
   clean:
