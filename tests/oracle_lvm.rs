@@ -47,6 +47,13 @@ fn oracle_dir() -> PathBuf {
 }
 
 fn same(what: &str, dev: &dyn BlockRead, expect_path: &Path) {
+    let bytes = matches(what, dev, expect_path);
+    println!("lvm oracle: {what} matches the kernel ({bytes} bytes)");
+}
+
+/// [`same`] without the line: every byte of `dev` is the kernel's, or the
+/// test fails naming `what`. Returns how many bytes were compared.
+fn matches(what: &str, dev: &dyn BlockRead, expect_path: &Path) -> u64 {
     let expect = fs::read(expect_path).unwrap_or_else(|e| panic!("{what}: {e}"));
     assert_eq!(
         dev.size_bytes(),
@@ -62,10 +69,7 @@ fn same(what: &str, dev: &dyn BlockRead, expect_path: &Path) {
             got[at], expect[at]
         );
     }
-    println!(
-        "lvm oracle: {what} matches the kernel ({} bytes)",
-        expect.len()
-    );
+    expect.len() as u64
 }
 
 fn pvs(dir: &Path, n: usize) -> Vec<FileBlock> {
@@ -473,10 +477,17 @@ fn raid_and_mirror_volumes_missing_images_read_the_kernels_bytes() {
             cases.push((vec![gone, other], "r6"));
         }
     }
+    // One line for all of them: each case fails by name, and a line per
+    // case would be 35 lines of the tier's budget saying "matches".
+    let (mut count, mut bytes) = (0, 0);
     for (gone, lv) in cases {
         let what = format!("raid/{lv} without pv-{gone:?}");
         let opened = LogicalVolume::open(without(&gone), lv);
         let lv_reader = opened.unwrap_or_else(|e| panic!("{what}: {e}"));
-        same(&what, &lv_reader, &dir.join(format!("{lv}.bin")));
+        bytes += matches(&what, &lv_reader, &dir.join(format!("{lv}.bin")));
+        count += 1;
     }
+    println!(
+        "lvm oracle: {count} raid and mirror reads with PVs left out match the kernel ({bytes} bytes)"
+    );
 }

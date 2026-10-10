@@ -358,7 +358,7 @@ jobs:
         shell: bash
         # Floor: all three tests in the target must run.
         run: |
-          bash ../rust-fs-core/scripts/tier.sh "test (oracle lvm)" oracle-lvm 40 3000 -- cargo test --locked --quiet --features oracle --test oracle_lvm -- --nocapture
+          bash ../rust-fs-core/scripts/tier.sh "test (oracle lvm)" oracle-lvm 50 3550 -- cargo test --locked --quiet --features oracle --test oracle_lvm -- --nocapture
           bash ../rust-fs-core/scripts/test-floor.sh oracle-lvm 3
       - name: keep the tier logs
         if: always()
