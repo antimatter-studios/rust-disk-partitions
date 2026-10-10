@@ -72,14 +72,18 @@ fn cases() -> Vec<Case> {
         out.push(Case {
             name: dir.file_name().unwrap().to_string_lossy().into_owned(),
             members: field("members").parse().unwrap(),
-            level: field("level").parse().unwrap(),
+            // mdadm names the linear level; its superblock number is -1.
+            level: match field("level").as_str() {
+                "linear" => -1,
+                level => level.parse().unwrap(),
+            },
             dir,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     assert!(
-        out.len() >= 37,
-        "only {} md oracle cases found; the script builds 37",
+        out.len() >= 40,
+        "only {} md oracle cases found; the script builds 40",
         out.len()
     );
     out
@@ -208,10 +212,15 @@ fn every_v1_superblock_agrees_with_mdadm_examine() {
                 let kib: u64 = chunk.trim_end_matches('K').parse().unwrap();
                 assert_eq!(sb.chunk_bytes, kib * 1024, "{what}: chunk");
             }
+            // A linear array's chunk is its rounding, and mdadm says so.
+            if let Some(rounding) = examine_field(&text, "Rounding") {
+                let kib: u64 = rounding.trim_end_matches('K').parse().unwrap();
+                assert_eq!(sb.chunk_bytes, kib * 1024, "{what}: rounding");
+            }
             checked += 1;
         }
     }
-    assert!(checked >= 85, "only {checked} 1.x members checked");
+    assert!(checked >= 91, "only {checked} 1.x members checked");
     println!("md oracle: {checked} superblocks agree with mdadm --examine");
 }
 

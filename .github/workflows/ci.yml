@@ -336,7 +336,7 @@ jobs:
         # Two floors: both tests in the target must run, and the target
         # itself asserts every one of the 23 arrays was compared.
         run: |
-          bash ../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 46 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture
+          bash ../rust-fs-core/scripts/tier.sh "test (oracle md)" oracle-md 61 3000 -- cargo test --locked --quiet --features oracle --test oracle_md -- --nocapture
           bash ../rust-fs-core/scripts/test-floor.sh oracle-md 2
       # THE KERNEL AS THE LVM ORACLE. scripts/make-lvm-oracle.sh has lvm2
       # build a linear volume in two segments that are not adjacent on its
