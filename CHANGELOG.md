@@ -20,6 +20,13 @@ never does.
   images than its level survives names the missing PV. Checked against the
   kernel's bytes with each PV of the oracle left out, and every pair for
   raid6.
+- **LVM thin volumes and thin snapshots are read (#166).** A thin volume's
+  blocks are looked up in its pool's dm-thin metadata: the superblock, then
+  the two-level btree from device to block to pool data block, every
+  metadata block's checksum verified. A block never written reads as zeros.
+  Checked byte for byte against a thin volume and a thin snapshot lvm2
+  built and the kernel filled. A thin volume over an external origin is
+  refused.
 
 ## [0.6.1] — 2026-10-09
 

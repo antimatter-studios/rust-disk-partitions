@@ -349,7 +349,7 @@ jobs:
       # out in turn. It fails, never skips, when the volumes are missing.
       - name: build LVM volumes with the kernel
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lvm2
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lvm2 thin-provisioning-tools
           sudo bash scripts/make-lvm-oracle.sh tmp/lvm-oracle
       - name: build the LVM oracle tests
         # Outside the budget, in a step of its own (#155).
