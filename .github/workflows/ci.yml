@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 0
       - name: clone rust-fs-core sibling, for code-changed.sh
         shell: bash
-        run: git clone --depth 1 --branch v0.3.8 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.3.11 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - name: Classify the change
         id: c
         env:
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone rust-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.3.8 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.3.11 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -192,7 +192,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone rust-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.3.8 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.3.11 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -252,7 +252,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone rust-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.3.8 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.3.11 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -382,7 +382,7 @@ jobs:
       # scripts are core's, and core.sh finds this sibling first.
       - name: clone rust-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.3.8 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.3.11 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -439,7 +439,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: clone rust-fs-core sibling
         shell: bash
-        run: git clone --depth 1 --branch v0.3.8 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.3.11 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
