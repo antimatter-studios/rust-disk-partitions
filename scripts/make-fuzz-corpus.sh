@@ -19,7 +19,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/partitions-fuzz-corpus.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-for tool in sgdisk sfdisk mke2fs mkfs.vfat mkswap mksquashfs; do
+for tool in sgdisk sfdisk mke2fs mkfs.vfat mkswap mksquashfs bcachefs; do
     command -v "$tool" >/dev/null || {
         echo "$tool not found; it seeds part of the corpus" >&2
         exit 1
@@ -136,6 +136,12 @@ window "$work/fat32.img" fat32
 truncate -s 1M "$work/swap.img"
 mkswap "$work/swap.img" >/dev/null 2>&1
 window "$work/swap.img" swap
+
+# bcachefs's primary superblock is at sector 8, its magic 0x18 bytes in
+# (#182). The reference formatter's minimum is well above a megabyte.
+truncate -s 64M "$work/bcachefs.img"
+bcachefs format -q "$work/bcachefs.img" >/dev/null 2>&1
+window "$work/bcachefs.img" bcachefs
 
 # SquashFS is smaller than the window, which is itself worth a seed:
 # `classify` has to answer from four bytes without reading past the end.
