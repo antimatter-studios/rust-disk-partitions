@@ -9,6 +9,17 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-13
+
+### Added
+
+- **The sniffer reports XFS, Btrfs and EROFS (#184).** `FsKind::Xfs`,
+  `FsKind::Btrfs` and `FsKind::Erofs`, from each superblock's magic, and
+  `PART_FS_XFS` (14), `PART_FS_BTRFS` (15) and `PART_FS_EROFS` (16) through
+  the C ABI, where a partition or image holding one was `unknown`. The
+  sniff window grows to 64 KiB plus the 72 bytes Btrfs's magic needs.
+  Checked against windows of images each reference formatter made.
+
 ## [0.7.0] — 2026-10-13
 
 ### Added
@@ -676,7 +687,8 @@ this release.
 
 - Initial release: MBR and GPT partition-table probing.
 
-[Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.5.1...v0.6.0
