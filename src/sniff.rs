@@ -37,14 +37,16 @@ pub enum FsKind {
     /// bcachefs — a 16-byte magic 0x18 bytes into the primary superblock,
     /// which is at byte 4096 (sector 8).
     Bcachefs,
+    /// Detected nothing recognisable.
+    Unknown,
+    // Variants added after `Unknown` keep its discriminant, which a caller
+    // may have cast to a number (#184).
     /// XFS — "XFSB" at offset 0, where the primary superblock starts.
     Xfs,
     /// Btrfs — "_BHRfS_M" 0x40 bytes into the superblock at 64 KiB.
     Btrfs,
     /// EROFS — magic 0xE0F5E1E2, little-endian, at offset 1024.
     Erofs,
-    /// Detected nothing recognisable.
-    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
