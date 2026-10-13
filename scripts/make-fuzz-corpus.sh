@@ -19,7 +19,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/partitions-fuzz-corpus.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-for tool in sgdisk sfdisk mke2fs mkfs.vfat mkswap mksquashfs bcachefs; do
+for tool in sgdisk sfdisk mke2fs mkfs.vfat mkswap mksquashfs bcachefs mkfs.xfs mkfs.btrfs mkfs.erofs; do
     command -v "$tool" >/dev/null || {
         echo "$tool not found; it seeds part of the corpus" >&2
         exit 1
@@ -114,7 +114,7 @@ PY
 # 48 KiB is the whole of what it can see. Committing the window rather
 # than the filesystem keeps these to a few tens of kilobytes each.
 window() {
-    dd if="$1" of="$here/fuzz/corpus/sniff/$2.bin" bs=1 count=49152 status=none
+    dd if="$1" of="$here/fuzz/corpus/sniff/$2.bin" bs=1 count="${3:-49152}" status=none
 }
 
 truncate -s 1M "$work/ext2.img"
@@ -142,6 +142,22 @@ window "$work/swap.img" swap
 truncate -s 64M "$work/bcachefs.img"
 bcachefs format -q "$work/bcachefs.img" >/dev/null 2>&1
 window "$work/bcachefs.img" bcachefs
+
+# XFS's superblock, magic and all, is the volume's first sector; the
+# reference formatter's minimum is 300 MiB (#184).
+truncate -s 320M "$work/xfs.img"
+mkfs.xfs -q "$work/xfs.img" >/dev/null 2>&1
+window "$work/xfs.img" xfs
+
+# Btrfs's superblock is at 64 KiB, its magic 0x40 bytes in, past the 48 KiB
+# the others need: this window runs to 68 KiB (#184).
+truncate -s 128M "$work/btrfs.img"
+mkfs.btrfs -q "$work/btrfs.img" >/dev/null 2>&1
+window "$work/btrfs.img" btrfs 69632
+
+# EROFS's superblock is at byte 1024 (#184), made from the empty tree.
+mkfs.erofs "$work/erofs.img" "$work/empty" >/dev/null 2>&1
+window "$work/erofs.img" erofs
 
 # SquashFS is smaller than the window, which is itself worth a seed:
 # `classify` has to answer from four bytes without reading past the end.

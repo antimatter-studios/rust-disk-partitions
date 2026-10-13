@@ -365,8 +365,8 @@ fn every_committed_disk_probes_to_the_table_the_tool_wrote() {
 
 /// Every window in the sniffer's corpus must be classified as the
 /// filesystem that produced it. The file name says which, so this is a
-/// check against `mke2fs`, `mkfs.vfat`, `mkswap`, `mksquashfs` and
-/// `bcachefs format` --
+/// check against `mke2fs`, `mkfs.vfat`, `mkswap`, `mksquashfs`,
+/// `bcachefs format`, `mkfs.xfs`, `mkfs.btrfs` and `mkfs.erofs` --
 /// running on a machine with none of them installed.
 #[test]
 fn the_sniffer_agrees_with_the_tool_that_made_each_window() {
@@ -388,6 +388,9 @@ fn the_sniffer_agrees_with_the_tool_that_made_each_window() {
             "squashfs" => got == disk_partitions::FsKind::Squashfs,
             // By name: the kind is matched as the sniffer reports it (#182).
             "bcachefs" => format!("{got:?}") == "Bcachefs",
+            "xfs" => format!("{got:?}") == "Xfs",
+            "btrfs" => format!("{got:?}") == "Btrfs",
+            "erofs" => format!("{got:?}") == "Erofs",
             other => panic!(
                 "the window {other}.bin is not one the script makes, so nothing knows what \
                  it should classify as"
