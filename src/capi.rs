@@ -53,6 +53,9 @@ pub enum FsKindCode {
     Iso9660 = 11,
     Squashfs = 12,
     Bcachefs = 13,
+    Xfs = 14,
+    Btrfs = 15,
+    Erofs = 16,
 }
 
 impl From<FsKind> for FsKindCode {
@@ -74,6 +77,9 @@ impl From<FsKind> for FsKindCode {
             FsKind::Iso9660 => FsKindCode::Iso9660,
             FsKind::Squashfs => FsKindCode::Squashfs,
             FsKind::Bcachefs => FsKindCode::Bcachefs,
+            FsKind::Xfs => FsKindCode::Xfs,
+            FsKind::Btrfs => FsKindCode::Btrfs,
+            FsKind::Erofs => FsKindCode::Erofs,
         }
     }
 }
