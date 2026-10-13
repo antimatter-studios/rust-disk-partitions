@@ -37,6 +37,12 @@ pub enum FsKind {
     /// bcachefs — a 16-byte magic 0x18 bytes into the primary superblock,
     /// which is at byte 4096 (sector 8).
     Bcachefs,
+    /// XFS — "XFSB" at offset 0, where the primary superblock starts.
+    Xfs,
+    /// Btrfs — "_BHRfS_M" 0x40 bytes into the superblock at 64 KiB.
+    Btrfs,
+    /// EROFS — magic 0xE0F5E1E2, little-endian, at offset 1024.
+    Erofs,
     /// Detected nothing recognisable.
     Unknown,
 }
@@ -100,6 +106,18 @@ const BCACHEFS_MAGIC: [u8; 16] = [
     0xc6, 0x85, 0x73, 0xf6, 0x66, 0xce, 0x90, 0xa9, 0xd9, 0x6a, 0x60, 0xcf, 0x80, 0x3d, 0xf7, 0xef,
 ];
 
+/// Where Btrfs's magic is: 0x40 bytes into the superblock at 64 KiB.
+const BTRFS_MAGIC_AT: usize = 0x10000 + 0x40;
+
+/// Btrfs's superblock magic.
+const BTRFS_MAGIC: &[u8; 8] = b"_BHRfS_M";
+
+/// Where EROFS's magic is: the superblock at byte 1024 starts with it.
+const EROFS_MAGIC_AT: usize = 1024;
+
+/// EROFS's superblock magic, 0xE0F5E1E2 as it lies on disk (little-endian).
+const EROFS_MAGIC: [u8; 4] = [0xe2, 0xe1, 0xf5, 0xe0];
+
 /// End of the ISO9660 `CD001` identifier: the furthest byte that probe reads.
 const ISO9660_END: usize = 0x8006;
 
@@ -115,11 +133,17 @@ const SWAP_PAGES: [usize; 5] = [4096, 8192, 16384, 32768, 65536];
 /// (#25).
 pub const WINDOW: u64 = {
     let largest_page = SWAP_PAGES[SWAP_PAGES.len() - 1];
-    if largest_page > ISO9660_END {
-        largest_page as u64
+    let mut end = if largest_page > ISO9660_END {
+        largest_page
     } else {
-        ISO9660_END as u64
+        ISO9660_END
+    };
+    // Btrfs's magic is past the last swap page (#184).
+    let btrfs_end = BTRFS_MAGIC_AT + BTRFS_MAGIC.len();
+    if btrfs_end > end {
+        end = btrfs_end;
     }
+    end as u64
 };
 
 /// Stand-alone classifier — exposed for tests and for callers who already
@@ -136,6 +160,25 @@ pub fn classify(buf: &[u8]) -> FsKind {
         && buf[BCACHEFS_MAGIC_AT..BCACHEFS_MAGIC_AT + BCACHEFS_MAGIC.len()] == BCACHEFS_MAGIC
     {
         return FsKind::Bcachefs;
+    }
+
+    // XFS: the superblock is the volume's first sector (#184).
+    if buf.len() >= 4 && &buf[0..4] == b"XFSB" {
+        return FsKind::Xfs;
+    }
+
+    // EROFS: the superblock at byte 1024 opens with its magic (#184).
+    if buf.len() >= EROFS_MAGIC_AT + EROFS_MAGIC.len()
+        && buf[EROFS_MAGIC_AT..EROFS_MAGIC_AT + EROFS_MAGIC.len()] == EROFS_MAGIC
+    {
+        return FsKind::Erofs;
+    }
+
+    // Btrfs: the superblock at 64 KiB, its magic 0x40 bytes in (#184).
+    if buf.len() >= BTRFS_MAGIC_AT + BTRFS_MAGIC.len()
+        && &buf[BTRFS_MAGIC_AT..BTRFS_MAGIC_AT + BTRFS_MAGIC.len()] == BTRFS_MAGIC
+    {
+        return FsKind::Btrfs;
     }
 
     // FAT / NTFS / exFAT all start with a BPB-like layout — boot sector at 0,

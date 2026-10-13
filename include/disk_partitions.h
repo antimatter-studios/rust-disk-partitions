@@ -52,6 +52,9 @@ typedef enum {
     PART_FS_ISO9660     = 11,
     PART_FS_SQUASHFS    = 12,
     PART_FS_BCACHEFS    = 13,
+    PART_FS_XFS         = 14,
+    PART_FS_BTRFS       = 15,
+    PART_FS_EROFS       = 16,
 } PartitionsFsKind;
 
 typedef enum {

@@ -541,6 +541,35 @@ fn sniff_bcachefs() {
 }
 
 #[test]
+fn sniff_xfs() {
+    let mut buf = vec![0u8; 512];
+    buf[0..4].copy_from_slice(b"XFSB");
+    assert_eq!(classify(&buf), FsKind::Xfs);
+    buf[3] = b'C';
+    assert_eq!(classify(&buf), FsKind::Unknown);
+}
+
+#[test]
+fn sniff_btrfs() {
+    let mut buf = vec![0u8; 0x10048];
+    buf[0x10040..0x10048].copy_from_slice(b"_BHRfS_M");
+    assert_eq!(classify(&buf), FsKind::Btrfs);
+    // A window that stops inside the magic is not Btrfs, and the sniff
+    // window reaches past it.
+    assert_eq!(classify(&buf[..0x10047]), FsKind::Unknown);
+    const { assert!(disk_partitions::sniff::WINDOW >= 0x10048) };
+}
+
+#[test]
+fn sniff_erofs() {
+    let mut buf = vec![0u8; 2048];
+    buf[1024..1028].copy_from_slice(&[0xe2, 0xe1, 0xf5, 0xe0]);
+    assert_eq!(classify(&buf), FsKind::Erofs);
+    buf[1027] = 0;
+    assert_eq!(classify(&buf), FsKind::Unknown);
+}
+
+#[test]
 fn sniff_iso9660() {
     let mut buf = vec![0u8; 0x8800];
     buf[0x8001..0x8006].copy_from_slice(b"CD001");
