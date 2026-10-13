@@ -524,6 +524,23 @@ fn sniff_squashfs() {
 }
 
 #[test]
+fn sniff_bcachefs() {
+    let magic = [
+        0xc6, 0x85, 0x73, 0xf6, 0x66, 0xce, 0x90, 0xa9, 0xd9, 0x6a, 0x60, 0xcf, 0x80, 0x3d, 0xf7,
+        0xef,
+    ];
+    let mut buf = vec![0u8; 8192];
+    buf[4096 + 0x18..4096 + 0x28].copy_from_slice(&magic);
+    assert_eq!(classify(&buf), FsKind::Bcachefs);
+    // One byte off is not bcachefs, and neither is a window that stops
+    // inside the magic.
+    buf[4096 + 0x27] ^= 1;
+    assert_eq!(classify(&buf), FsKind::Unknown);
+    buf[4096 + 0x27] ^= 1;
+    assert_eq!(classify(&buf[..4096 + 0x27]), FsKind::Unknown);
+}
+
+#[test]
 fn sniff_iso9660() {
     let mut buf = vec![0u8; 0x8800];
     buf[0x8001..0x8006].copy_from_slice(b"CD001");

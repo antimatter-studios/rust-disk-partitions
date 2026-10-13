@@ -51,6 +51,7 @@ pub enum FsKindCode {
     LinuxSwap = 10,
     Iso9660 = 11,
     Squashfs = 12,
+    Bcachefs = 13,
 }
 
 impl From<FsKind> for FsKindCode {
@@ -71,6 +72,7 @@ impl From<FsKind> for FsKindCode {
             FsKind::LinuxSwap => FsKindCode::LinuxSwap,
             FsKind::Iso9660 => FsKindCode::Iso9660,
             FsKind::Squashfs => FsKindCode::Squashfs,
+            FsKind::Bcachefs => FsKindCode::Bcachefs,
         }
     }
 }
