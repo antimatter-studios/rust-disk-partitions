@@ -7,8 +7,11 @@ use crate::error::{Error, Result};
 use crate::probe::Partition;
 use crate::BlockRead;
 
-/// Recognised filesystem signatures.
+/// Recognised filesystem signatures. Non-exhaustive: a filesystem the
+/// sniffer learns to recognise is a new variant, which is then an
+/// addition rather than a break for a caller's `match` (#184).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FsKind {
     /// ext2 / ext3 / ext4 — superblock magic 0xEF53 at byte 1080. The
     /// `version` field carries the best guess from feature flags.
@@ -31,6 +34,9 @@ pub enum FsKind {
     Iso9660,
     /// SquashFS — "hsqs" little-endian magic at offset 0.
     Squashfs,
+    /// bcachefs — a 16-byte magic 0x18 bytes into the primary superblock,
+    /// which is at byte 4096 (sector 8).
+    Bcachefs,
     /// Detected nothing recognisable.
     Unknown,
 }
@@ -86,6 +92,14 @@ pub fn sniff(dev: &dyn BlockRead, partition: &Partition) -> Result<FsKind> {
     Ok(classify(&buf))
 }
 
+/// Where bcachefs's magic is: 0x18 bytes into the superblock at byte 4096.
+const BCACHEFS_MAGIC_AT: usize = 4096 + 0x18;
+
+/// bcachefs's superblock magic.
+const BCACHEFS_MAGIC: [u8; 16] = [
+    0xc6, 0x85, 0x73, 0xf6, 0x66, 0xce, 0x90, 0xa9, 0xd9, 0x6a, 0x60, 0xcf, 0x80, 0x3d, 0xf7, 0xef,
+];
+
 /// End of the ISO9660 `CD001` identifier: the furthest byte that probe reads.
 const ISO9660_END: usize = 0x8006;
 
@@ -114,6 +128,14 @@ pub fn classify(buf: &[u8]) -> FsKind {
     // SquashFS first — magic at offset 0, cheap.
     if buf.len() >= 4 && &buf[0..4] == b"hsqs" {
         return FsKind::Squashfs;
+    }
+
+    // bcachefs: the primary superblock at sector 8, its magic 0x18 bytes in
+    // (#182). Sixteen bytes no other filesystem here writes at that place.
+    if buf.len() >= BCACHEFS_MAGIC_AT + BCACHEFS_MAGIC.len()
+        && buf[BCACHEFS_MAGIC_AT..BCACHEFS_MAGIC_AT + BCACHEFS_MAGIC.len()] == BCACHEFS_MAGIC
+    {
+        return FsKind::Bcachefs;
     }
 
     // FAT / NTFS / exFAT all start with a BPB-like layout — boot sector at 0,

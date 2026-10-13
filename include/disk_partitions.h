@@ -51,6 +51,7 @@ typedef enum {
     PART_FS_LINUX_SWAP  = 10,
     PART_FS_ISO9660     = 11,
     PART_FS_SQUASHFS    = 12,
+    PART_FS_BCACHEFS    = 13,
 } PartitionsFsKind;
 
 typedef enum {
