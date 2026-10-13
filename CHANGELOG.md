@@ -9,6 +9,46 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-13
+
+### Added
+
+- **The sniffer reports bcachefs (#182).** `FsKind::Bcachefs`, from the
+  superblock magic at byte 4096 + 0x18, and `PART_FS_BCACHEFS` (13) through
+  the C ABI, where a bcachefs partition or image was `unknown`. Checked
+  against a window of an image the reference formatter made.
+
+- **LVM volumes with `raid10` segments are read (#166).** lvm2's raid10 is
+  dm-raid over md's raid10 personality in the near layout; each chunk is
+  read from its first near copy, placed by md's own RAID10 geometry. Checked
+  byte for byte against a volume lvm2 built and the kernel filled. dm-raid's
+  far and offset layouts stay refused.
+- **LVM raid and mirror volumes are read with images missing (#166).** An
+  image whose PV was not given is read around as md reads around a missing
+  member: from another mirror or raid10 copy, or rebuilt from raid5 parity
+  or raid6 P and Q, sharing md's own reconstruction. A volume missing more
+  images than its level survives names the missing PV. Checked against the
+  kernel's bytes with each PV of the oracle left out, and every pair for
+  raid6.
+- **LVM thin volumes and thin snapshots are read (#166).** A thin volume's
+  blocks are looked up in its pool's dm-thin metadata: the superblock, then
+  the two-level btree from device to block to pool data block, every
+  metadata block's checksum verified. A block never written reads as zeros.
+  Checked byte for byte against a thin volume and a thin snapshot lvm2
+  built and the kernel filled. A thin volume over an external origin is
+  refused.
+- **md linear arrays are read (#165).** The members' data areas end to end in
+  slot order, each rounded down to the chunk when the superblock records a
+  rounding, as the kernel's `linear_conf` sizes them. Checked byte for byte
+  against linear arrays mdadm built in metadata 1.2 and 0.90, and one
+  rounded to 64 KiB, on a kernel that has the linear personality again
+  (it was absent from 6.8 to 6.13).
+
+### Changed
+
+- **`FsKind` and `FsKindCode` have a new variant**, which breaks an
+  exhaustive `match` on either; hence 0.7.0.
+
 ## [0.6.1] — 2026-10-09
 
 Everything here adds to the public surface; nothing a consumer already builds
@@ -633,7 +673,8 @@ this release.
 
 - Initial release: MBR and GPT partition-table probing.
 
-[Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/antimatter-studios/rust-disk-partitions/compare/v0.5.0...v0.5.1
