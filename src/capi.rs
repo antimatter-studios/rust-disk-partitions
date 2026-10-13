@@ -37,6 +37,7 @@ use std::sync::Arc;
 /// [`PartitionInfo`].
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FsKindCode {
     Unknown = 0,
     Ext2 = 1,

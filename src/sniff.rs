@@ -7,8 +7,11 @@ use crate::error::{Error, Result};
 use crate::probe::Partition;
 use crate::BlockRead;
 
-/// Recognised filesystem signatures.
+/// Recognised filesystem signatures. Non-exhaustive: a filesystem the
+/// sniffer learns to recognise is a new variant, which is then an
+/// addition rather than a break for a caller's `match` (#184).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FsKind {
     /// ext2 / ext3 / ext4 — superblock magic 0xEF53 at byte 1080. The
     /// `version` field carries the best guess from feature flags.

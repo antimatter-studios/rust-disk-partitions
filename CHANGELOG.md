@@ -46,6 +46,9 @@ pull request; a release gathers them into a section here.
 
 ### Changed
 
+- **`FsKind` and `FsKindCode` are `#[non_exhaustive]`**, so a filesystem
+  the sniffer learns to recognise from now on is a new variant without
+  breaking a caller's `match` (#184).
 - **`FsKind` and `FsKindCode` have a new variant**, which breaks an
   exhaustive `match` on either; hence 0.7.0.
 
