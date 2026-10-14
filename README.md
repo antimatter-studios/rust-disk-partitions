@@ -1,7 +1,10 @@
-# partitions
+# rust-disk-partitions
 
 Pure-Rust partition-table probe and filesystem-magic sniffer over any
 random-access block source.
+
+Published on crates.io as `rust-disk-partitions`; the library name is
+`disk_partitions`.
 
 ## What it does
 

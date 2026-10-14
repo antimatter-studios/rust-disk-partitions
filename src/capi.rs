@@ -267,7 +267,7 @@ pub unsafe extern "C" fn partitions_probe(
 
     ffi_guard(|| {
         let (table, parts, source) = probe::probe_with_status(&*parent_arc).map_err(|e| {
-            // Lift partitions::Error to fs_core::Error::Custom for the
+            // Lift disk_partitions::Error to fs_core::Error::Custom for the
             // last-error message. The error code returned to the C
             // caller will be Custom.
             fs_core::Error::Custom(e.to_string())
