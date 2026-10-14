@@ -17,9 +17,9 @@ exclude = ["fuzz"]
 former-name = "am-partitions"
 
 [lib]
-# Published as `rust-disk-partitions` on crates.io; consumers `use partitions::...`
-# inside their code. Decoupling the package name from the lib name keeps the
-# brand-y prefix out of every import statement.
+# Published as `rust-disk-partitions` on crates.io; consumers
+# `use disk_partitions::...` inside their code. The import is the repository
+# name without its `rust-` prefix, which the package name keeps.
 name = "disk_partitions"
 crate-type = ["staticlib", "rlib"]
 

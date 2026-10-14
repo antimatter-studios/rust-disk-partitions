@@ -7,7 +7,7 @@
 //! Block-device abstractions come from
 //! [`fs_core`](https://github.com/antimatter-studios/rust-fs-core); this
 //! crate re-exports the bits most consumers will use so callers can `use
-//! partitions::BlockRead;` without an extra dependency line.
+//! disk_partitions::BlockRead;` without an extra dependency line.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -123,7 +123,7 @@ pub use sniff::{sniff, FsKind};
 // on fs-core directly for the common cases. SliceReader / OwnedSlice
 // originally lived here but moved to fs-core in v0.2 — they're generic
 // block-layer types, not partition-specific. Re-exported to keep
-// existing `partitions::SliceReader` callers working.
+// existing `disk_partitions::SliceReader` callers working.
 pub use fs_core::{BlockDevice, BlockRead, FileDevice as FileBlock, OwnedSlice, SliceReader};
 
 #[cfg(test)]
