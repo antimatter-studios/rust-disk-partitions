@@ -8,6 +8,10 @@ on:
   # decides whether they land. The queue reads ci-ok only from a workflow
   # that triggers here.
   merge_group:
+  # A full run on demand, and from another workflow. Both are full profile:
+  # scripts/ci-plan.sh calls only a pull request quick.
+  workflow_dispatch:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,11 +32,19 @@ jobs:
   # diff runs everything. The three-OS test matrix, the release suite and the
   # oracles run only when the answer is true, and ci-ok accepts their skip
   # when, and only when, it is false.
+  #
+  # IT ALSO WRITES THE PLAN (#188). scripts/ci-plan.sh turns the event into a
+  # profile: a pull request is `quick` and runs the unit matrix, fmt and the
+  # script tests, and semver; every other event -- the merge queue, a manual
+  # dispatch, a workflow call, a push to main, and any event the script does
+  # not know -- is `full` and adds the release suite and the oracles. The
+  # merge queue decides what lands, so nothing lands without the full run.
   changes:
     name: changes (does this need the full pipeline?)
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.c.outputs.code }}
+      profile: ${{ steps.plan.outputs.profile }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,6 +86,15 @@ jobs:
           fi
           echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Plan the profile
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          profile="$(bash scripts/ci-plan.sh "$EVENT")"
+          echo "profile=$profile ($EVENT)"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
 
   test:
     name: test / ${{ matrix.os }}
@@ -186,7 +207,8 @@ jobs:
   test-release:
     name: test (release)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # Full profile only (#188): a pull request leaves this to the merge queue.
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -246,7 +268,8 @@ jobs:
   oracle:
     name: oracle (external tools)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # Full profile only (#188): a pull request leaves this to the merge queue.
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -390,7 +413,20 @@ jobs:
       - name: fmt --check
         run: cargo fmt --check
       - name: the one required check stands for every job
+        # test-release and oracle carry the profile in their `if:`, so ci-gate
+        # reads them as conditional. They are declared here rather than
+        # dropped from ci-ok's needs: scripts/ci-verdict.sh accepts their skip
+        # only when the plan was quick or the change was documentation alone.
+        env:
+          CI_GATE_NON_GATING: test-release oracle
         run: bash ../rust-fs-core/scripts/ci-gate.sh
+      - name: install jq for the script tests
+        # The plan's truth table drives scripts/ci-verdict.sh, which reads
+        # ci-ok's needs with jq. Installed rather than assumed of the image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          jq --version
       - name: the agent guide carries the shared block
         # AGENTS.md embeds agent-core, byte-identical with every sibling. This
         # runs the script directly rather than through `chore lint`, because
@@ -461,23 +497,30 @@ jobs:
     # required check that never reports -- which GitHub reads as
     # permanently pending, with enforce_admins on and nothing to point
     # at. It is also the only shape in which a job-level `if:` is safe.
+    #
+    # THE VERDICT IS scripts/ci-verdict.sh (#188), held to a truth table by
+    # tests/scripts/test-ci-plan.sh. It fails on a missing or invalid plan,
+    # a job missing from needs, and any failure, cancellation or skip the
+    # plan did not ask for: test-release and oracle may skip only on a quick
+    # plan or a documentation-only change, the test matrix only on the
+    # latter, and nothing else at all.
     if: always()
     needs: [changes, test, test-release, oracle, fmt, semver]
     runs-on: ubuntu-latest
     steps:
-      - name: Every job ran and succeeded
+      - uses: actions/checkout@v4
+      - name: install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          jq --version
+      - name: Every job the plan asked for ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
           # false only for a change to documentation alone: then, and only
-          # then, a skipped job is not a failed one.
+          # then, a skipped path-gated job is not a failed one.
           CODE: ${{ needs.changes.outputs.code }}
-        run: |
-          set -euo pipefail
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "code changed: $CODE"
-          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" '[to_entries[] | select(.value.result != "success" and ($code != "false" or .value.result != "skipped")) | .key] | join(", ")')"
-          if [ -n "$bad" ]; then
-            echo "::error::not green: $bad (failed, cancelled or skipped)"
-            exit 1
-          fi
-          echo "all required jobs succeeded"
+          # quick only for a pull request: then, and only then, a skipped
+          # full-profile job is not a failed one.
+          PROFILE: ${{ needs.changes.outputs.profile }}
+        run: bash scripts/ci-verdict.sh
