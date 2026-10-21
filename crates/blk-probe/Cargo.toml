@@ -1,0 +1,64 @@
+[package]
+name = "rust-blk-probe"
+version = "0.1.2"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/antimatter-studios/rust-disk-partitions"
+# A tool, released as tarballs; nothing publishes it to crates.io.
+publish = false
+description = "CLI: open a disk image (raw or qcow2/vhd/vhdx/vmdk container), probe its partition table, emit JSON."
+
+# THE LIBRARY IS WHERE THE PROBE LIVES, and the binary is a front for it.
+# Nothing links this crate -- `chore binary` is its interface and there is no
+# `staticlib` task -- but a probe that cannot be called except by running a
+# process cannot be fuzzed, cannot be compared against `blkid` from an
+# integration test, and could only ever be unit-tested from inside its own
+# `main.rs` (#16).
+#
+# THE LIB NAME IS `blk_probe` AND IS SET EXPLICITLY. Left to cargo it would be
+# `rust_blk_probe`, after the package; the binary target and the crate a test
+# says `use blk_probe::` to are the same word, and the package name is the
+# odd one out.
+[lib]
+name = "blk_probe"
+path = "src/lib.rs"
+
+# THE TOOL IS `blk.probe`, AND THIS TARGET IS `blk_probe` ONLY BECAUSE CARGO
+# REFUSES A DOT in a target name ("invalid character '.' in crate name").
+# scripts/stage-binary.sh renames it on the way out, so the underscore never
+# reaches anybody who runs the tool, and there is no hyphenated spelling at
+# all. tests/scripts/test-staged-binary-name.sh builds this target, stages
+# it and runs what was staged.
+[[bin]]
+name = "blk_probe"
+path = "src/main.rs"
+
+# EACH REQUIREMENT NAMES A RELEASE, NOT A FLOOR (#27 in rust-blk-probe). `version
+# = "0.2"` is satisfied by everything from 0.2.0 to 0.2.13, so the only thing
+# deciding what was built was Cargo.lock; a requirement that understates its
+# lock is the shape github-guard's `rust-deps-pinned` catches.
+#
+# THE IMAGE READERS COME FROM CRATES.IO; THE TWO CRATES OF THIS REPOSITORY'S
+# OWN FAMILY DO NOT. This crate is a member of the rust-disk-partitions
+# workspace (#150), so the partition library is the one at the repository's
+# root, by path, and a change to its sniff is tested through this tool in the
+# same pull request. rust-fs-core is the path checkout beside the repository,
+# the same one the library builds against. The four readers depend on
+# rust-fs-core from the registry, and the workspace root's `[patch.crates-io]`
+# points them at that same checkout: their `#[no_mangle]` C entry points and
+# this crate's `extern "C"` calls have to land in ONE rust-fs-core, or the link
+# carries two copies of every `fs_core_*` symbol.
+#
+# rust-fs-core's `cli` FEATURE IS ON FOR ONE THING: `blk.probe --version`
+# prints the family's identifying line through `fs_core::cli::version`, the
+# one place that line is written, rather than a copy of its format here
+# (#47). The rest of that module -- multi-call dispatch, JSON errors on
+# stderr, exit 2 for a usage error -- is not used, because this tool's exit
+# codes are a published contract of their own.
+[dependencies]
+rust-fs-core = { path = "../../../rust-fs-core", version = "0.3.12", features = ["cli"] }
+rust-img-qcow2 = "0.6.1"
+rust-img-vhd = "0.6.1"
+rust-img-vhdx = "0.6.1"
+rust-img-vmdk = "0.5.1"
+rust-disk-partitions = { path = "../..", version = "0.7.1" }

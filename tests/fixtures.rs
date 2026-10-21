@@ -540,19 +540,50 @@ fn sniff_bcachefs() {
     assert_eq!(classify(&buf[..4096 + 0x27]), FsKind::Unknown);
 }
 
+/// The fields the XFS rule reads, as `mkfs.xfs` (xfsprogs 6.6) wrote them for
+/// a 320 MiB image, and nothing else. From rust-blk-probe's superblock rules,
+/// which moved into the sniff (#150).
+fn xfs_superblock() -> Vec<u8> {
+    let mut sb = vec![0u8; 512];
+    sb[0..4].copy_from_slice(b"XFSB");
+    sb[4..8].copy_from_slice(&4096u32.to_be_bytes());
+    sb[88..92].copy_from_slice(&4u32.to_be_bytes());
+    sb[100..102].copy_from_slice(&0xb4a5u16.to_be_bytes());
+    sb[102..104].copy_from_slice(&512u16.to_be_bytes());
+    sb[120] = 12;
+    sb[121] = 9;
+    sb
+}
+
+/// A window holding a primary Btrfs superblock: `bytenr` 64 KiB, the magic.
+fn btrfs_window() -> Vec<u8> {
+    let mut buf = vec![0u8; 0x10048];
+    buf[0x10030..0x10038].copy_from_slice(&0x1_0000u64.to_le_bytes());
+    buf[0x10040..0x10048].copy_from_slice(b"_BHRfS_M");
+    buf
+}
+
+/// A window holding an EROFS superblock at 1 KiB: the magic, 4 KiB blocks.
+fn erofs_window() -> Vec<u8> {
+    let mut buf = vec![0u8; 2048];
+    buf[1024..1028].copy_from_slice(&[0xe2, 0xe1, 0xf5, 0xe0]);
+    buf[1024 + 12] = 12;
+    buf
+}
+
 #[test]
 fn sniff_xfs() {
-    let mut buf = vec![0u8; 512];
-    buf[0..4].copy_from_slice(b"XFSB");
+    let mut buf = xfs_superblock();
     assert_eq!(classify(&buf), FsKind::Xfs);
     buf[3] = b'C';
     assert_eq!(classify(&buf), FsKind::Unknown);
+    // A window too short for the fields the rule reads is not XFS.
+    assert_eq!(classify(&xfs_superblock()[..121]), FsKind::Unknown);
 }
 
 #[test]
 fn sniff_btrfs() {
-    let mut buf = vec![0u8; 0x10048];
-    buf[0x10040..0x10048].copy_from_slice(b"_BHRfS_M");
+    let buf = btrfs_window();
     assert_eq!(classify(&buf), FsKind::Btrfs);
     // A window that stops inside the magic is not Btrfs, and the sniff
     // window reaches past it.
@@ -562,11 +593,38 @@ fn sniff_btrfs() {
 
 #[test]
 fn sniff_erofs() {
-    let mut buf = vec![0u8; 2048];
-    buf[1024..1028].copy_from_slice(&[0xe2, 0xe1, 0xf5, 0xe0]);
+    let mut buf = erofs_window();
     assert_eq!(classify(&buf), FsKind::Erofs);
     buf[1027] = 0;
     assert_eq!(classify(&buf), FsKind::Unknown);
+}
+
+/// The magic alone is not enough: each rule's other fields have to agree, so
+/// eight right bytes in the middle of some other structure do not pass for a
+/// superblock (#150, from rust-blk-probe's superblock rules).
+#[test]
+fn a_magic_whose_fields_disagree_is_not_a_superblock() {
+    let mut xfs = xfs_superblock();
+    xfs[120] = 13; // blocklog says 8 KiB, blocksize says 4 KiB
+    assert_eq!(classify(&xfs), FsKind::Unknown);
+
+    let mut xfs = xfs_superblock();
+    xfs[121] = 10; // sectlog says 1 KiB, sectsize says 512
+    assert_eq!(classify(&xfs), FsKind::Unknown);
+
+    let mut xfs = xfs_superblock();
+    xfs[88..92].copy_from_slice(&0u32.to_be_bytes()); // no allocation groups
+    assert_eq!(classify(&xfs), FsKind::Unknown);
+
+    let mut btrfs = btrfs_window();
+    btrfs[0x10030..0x10038].copy_from_slice(&0x400_0000u64.to_le_bytes()); // the 64 MiB mirror
+    assert_eq!(classify(&btrfs), FsKind::Unknown);
+
+    let mut erofs = erofs_window();
+    erofs[1024 + 12] = 8; // 256-byte blocks
+    assert_eq!(classify(&erofs), FsKind::Unknown);
+    erofs[1024 + 12] = 17; // 128 KiB blocks
+    assert_eq!(classify(&erofs), FsKind::Unknown);
 }
 
 #[test]

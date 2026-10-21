@@ -6,6 +6,12 @@ random-access block source.
 Published on crates.io as `rust-disk-partitions`; the library name is
 `disk_partitions`.
 
+This repository is a Cargo workspace: the library is the root package, and
+[`crates/blk-probe`](crates/blk-probe) is `blk.probe`, a command-line tool that
+opens a disk image (raw, qcow2, VHD, VHDX, VMDK), probes it with this library
+and prints JSON. The tool is released as tarballs on `blk-probe-v<version>`
+tags; the library on `v<version>` tags and crates.io.
+
 ## What it does
 
 Given a `BlockRead` (a tiny trait: `read_at(offset, buf)` + `size_bytes()`),
@@ -115,6 +121,9 @@ src/
 tests/
   fixtures.rs   hand-built GPT/MBR + sniff fixtures
   mutation.rs   round-trip mutate/commit/re-probe tests
+crates/
+  blk-probe/    the blk.probe command-line tool, its tests, fuzz crate and
+                release scripts
 ```
 
 ## Verifying a release

@@ -19,7 +19,7 @@
 # quick plan.
 set -uo pipefail
 
-REQUIRED=(changes test test-release oracle fmt semver)
+REQUIRED=(changes test test-release oracle fmt semver blk-probe blk-probe-package)
 
 bad=()
 case "${PROFILE-}" in
@@ -44,7 +44,7 @@ for job in "${REQUIRED[@]}"; do
         "") bad+=("$job: missing from needs"); continue ;;
         skipped)
             case "$job" in
-                test) [ "${CODE-}" = false ] && continue ;;
+                test | blk-probe | blk-probe-package) [ "${CODE-}" = false ] && continue ;;
                 test-release | oracle)
                     { [ "${CODE-}" = false ] || [ "${PROFILE-}" = quick ]; } && continue ;;
             esac ;;
