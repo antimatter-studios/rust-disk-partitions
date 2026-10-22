@@ -543,6 +543,10 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt
+      - name: fuzz lockfiles match their manifests
+        run: |
+          cargo metadata --format-version 1 --locked --manifest-path fuzz/Cargo.toml >/dev/null
+          cargo metadata --format-version 1 --locked --manifest-path crates/blk-probe/fuzz/Cargo.toml >/dev/null
       - name: fmt --check
         run: cargo fmt --check
       - name: the one required check stands for every job
