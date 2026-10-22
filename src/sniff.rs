@@ -41,11 +41,15 @@ pub enum FsKind {
     Unknown,
     // Variants added after `Unknown` keep its discriminant, which a caller
     // may have cast to a number (#184).
-    /// XFS — "XFSB" at offset 0, where the primary superblock starts.
+    /// XFS — "XFSB" at offset 0, where the primary superblock starts, with
+    /// block and sector sizes that agree with their stored logarithms and at
+    /// least one allocation group.
     Xfs,
-    /// Btrfs — "_BHRfS_M" 0x40 bytes into the superblock at 64 KiB.
+    /// Btrfs — "_BHRfS_M" 0x40 bytes into the superblock at 64 KiB, whose
+    /// `bytenr` names 64 KiB: the primary copy, not a mirror.
     Btrfs,
-    /// EROFS — magic 0xE0F5E1E2, little-endian, at offset 1024.
+    /// EROFS — magic 0xE0F5E1E2, little-endian, at offset 1024, with a block
+    /// size from 512 bytes to 64 KiB.
     Erofs,
 }
 
@@ -108,8 +112,11 @@ const BCACHEFS_MAGIC: [u8; 16] = [
     0xc6, 0x85, 0x73, 0xf6, 0x66, 0xce, 0x90, 0xa9, 0xd9, 0x6a, 0x60, 0xcf, 0x80, 0x3d, 0xf7, 0xef,
 ];
 
+/// Where the primary Btrfs superblock is: 64 KiB into the volume.
+const BTRFS_SUPERBLOCK_AT: usize = 0x10000;
+
 /// Where Btrfs's magic is: 0x40 bytes into the superblock at 64 KiB.
-const BTRFS_MAGIC_AT: usize = 0x10000 + 0x40;
+const BTRFS_MAGIC_AT: usize = BTRFS_SUPERBLOCK_AT + 0x40;
 
 /// Btrfs's superblock magic.
 const BTRFS_MAGIC: &[u8; 8] = b"_BHRfS_M";
@@ -164,22 +171,21 @@ pub fn classify(buf: &[u8]) -> FsKind {
         return FsKind::Bcachefs;
     }
 
-    // XFS: the superblock is the volume's first sector (#184).
-    if buf.len() >= 4 && &buf[0..4] == b"XFSB" {
+    // XFS: the superblock is the volume's first sector (#184), and its
+    // sizes agree with their own logarithms (#150).
+    if is_xfs(buf) {
         return FsKind::Xfs;
     }
 
-    // EROFS: the superblock at byte 1024 opens with its magic (#184).
-    if buf.len() >= EROFS_MAGIC_AT + EROFS_MAGIC.len()
-        && buf[EROFS_MAGIC_AT..EROFS_MAGIC_AT + EROFS_MAGIC.len()] == EROFS_MAGIC
-    {
+    // EROFS: the superblock at byte 1024 opens with its magic (#184), and
+    // its block size is one the format allows (#150).
+    if buf.len() > EROFS_MAGIC_AT && is_erofs(&buf[EROFS_MAGIC_AT..]) {
         return FsKind::Erofs;
     }
 
-    // Btrfs: the superblock at 64 KiB, its magic 0x40 bytes in (#184).
-    if buf.len() >= BTRFS_MAGIC_AT + BTRFS_MAGIC.len()
-        && &buf[BTRFS_MAGIC_AT..BTRFS_MAGIC_AT + BTRFS_MAGIC.len()] == BTRFS_MAGIC
-    {
+    // Btrfs: the superblock at 64 KiB, its magic 0x40 bytes in (#184), and
+    // it says it lives at 64 KiB (#150).
+    if buf.len() > BTRFS_SUPERBLOCK_AT && is_btrfs(&buf[BTRFS_SUPERBLOCK_AT..]) {
         return FsKind::Btrfs;
     }
 
@@ -249,6 +255,65 @@ pub fn classify(buf: &[u8]) -> FsKind {
     }
 
     FsKind::Unknown
+}
+
+// THE THREE RULES BELOW CAME FROM rust-blk-probe's `superblock.rs` (#150).
+// The tool used to run them itself, after this sniff had answered `Unknown`,
+// because the magic alone let eight right bytes in the middle of some other
+// structure pass for a superblock. Each is the magic plus the fields that
+// give the rest of the superblock its meaning; the layouts are the formats'
+// own (`xfs_format.h`, `btrfs_tree.h`, `erofs_fs.h`), and the tool's oracle
+// (crates/blk-probe/tests/oracle_tools.rs) holds every answer to what
+// `blkid -p` says about an image each format's own mkfs wrote.
+
+fn be16(b: &[u8], at: usize) -> u16 {
+    u16::from_be_bytes([b[at], b[at + 1]])
+}
+
+fn be32(b: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+/// `struct xfs_dsb`, big-endian, at the start of `sb`: `sb_magicnum` at 0,
+/// `sb_blocksize` at 4, `sb_agcount` at 88, `sb_sectsize` at 102,
+/// `sb_blocklog` at 120 and `sb_sectlog` at 121.
+///
+/// The block and sector sizes are each stored twice, once as a size and once
+/// as a log2, and must agree -- which is the check that turns four magic
+/// bytes into a superblock. The ranges are the format's: a block of 512 bytes
+/// to 64 KiB, a sector of 512 bytes to 32 KiB, and at least one allocation
+/// group.
+fn is_xfs(sb: &[u8]) -> bool {
+    if sb.len() < 122 || &sb[0..4] != b"XFSB" {
+        return false;
+    }
+    let block = be32(sb, 4);
+    let sector = u32::from(be16(sb, 102));
+    let (block_log, sector_log) = (u32::from(sb[120]), u32::from(sb[121]));
+    (9..=16).contains(&block_log)
+        && block == 1 << block_log
+        && (9..=15).contains(&sector_log)
+        && sector == 1 << sector_log
+        && be32(sb, 88) > 0
+}
+
+/// `struct btrfs_super_block`, little-endian, at the start of `sb`: `bytenr`
+/// at 48, the magic at 64.
+///
+/// `bytenr` is where the superblock says it lives. The primary copy's is its
+/// own offset, 64 KiB, so a stray `_BHRfS_M` -- or a mirror copy seen through
+/// the wrong window -- does not pass for a primary superblock.
+fn is_btrfs(sb: &[u8]) -> bool {
+    sb.len() >= 72
+        && &sb[64..72] == BTRFS_MAGIC
+        && u64::from_le_bytes(sb[48..56].try_into().unwrap()) == BTRFS_SUPERBLOCK_AT as u64
+}
+
+/// `struct erofs_super_block`, little-endian, at the start of `sb`: the magic
+/// at 0 and `blkszbits` at 12, the log2 of the block size, which the format
+/// allows from 512 bytes to 64 KiB.
+fn is_erofs(sb: &[u8]) -> bool {
+    sb.len() >= 13 && sb[0..4] == EROFS_MAGIC && (9..=16).contains(&sb[12])
 }
 
 /// Best-effort ext2/3/4 discrimination from the superblock feature flags.

@@ -396,6 +396,139 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --features oracle --all-targets -- -D warnings
 
+  # THE blk.probe TOOL (#150): crates/blk-probe, the workspace's second crate,
+  # which opens a disk image through the four image readers and prints what
+  # this library finds in it as JSON. It was the rust-blk-probe repository,
+  # and these are its jobs, moved here whole. It runs on every pull request a
+  # code change makes, like the library's matrix, because it is how a change to
+  # the sniff is seen through real images in the pull request that makes it.
+  #
+  # AND aarch64 LINUX, which is where `c_char` is UNSIGNED. It is signed on
+  # both of the other two, so a cast that is real on them is a no-op there and
+  # `clippy -D warnings` refuses it (rust-blk-probe#15).
+  blk-probe:
+    name: blk-probe / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: clone rust-fs-core sibling
+        shell: bash
+        run: git clone --depth 1 --branch v0.3.12 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      # THE ORACLE TESTS WRITE THEIR OWN XFS, BTRFS AND EROFS IMAGES, with
+      # each format's own mkfs, because mkfs.xfs refuses anything under
+      # 300 MiB. blkid and sfdisk are already on every Linux runner; these
+      # three are not, and crates/blk-probe/tests/oracle_tools.rs fails naming
+      # the package when one is missing rather than skipping. It is what holds
+      # this library's XFS, Btrfs and EROFS sniff to `blkid -p`. macOS does not
+      # compile that file.
+      - name: install the mkfs tools the oracle tests write images with
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xfsprogs btrfs-progs erofs-utils
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # BOTH PROFILES ARE COMPILED HERE, OUTSIDE THE BUDGETED TIERS, so a cold
+      # cache's `Compiling` lines land here and not in a tier (#155,
+      # rust-blk-probe#55).
+      - name: build
+        run: cargo test --locked -p rust-blk-probe --all-targets --no-run
+      - name: build (release)
+        run: cargo test --locked --release -p rust-blk-probe --all-targets --no-run
+      # The numbers are chores.yml's, and tests/scripts/test-tier-budgets-agree.sh
+      # fails a pull request in which the two files disagree.
+      - name: test (debug)
+        shell: bash
+        run: |
+          bash ../rust-fs-core/scripts/tier.sh "blk-probe (debug)" blk-probe-debug 175 8000 -- cargo test --locked -p rust-blk-probe --all-targets
+          # TWO FLOORS, ONE PER PLATFORM: tests/oracle_tools.rs compiles only
+          # on Linux, so the two run different numbers of tests, and one
+          # number would be a floor the Linux legs could never breach.
+          if [ "$(uname -s)" = Linux ]; then
+            bash ../rust-fs-core/scripts/test-floor.sh blk-probe-debug 56
+          else
+            bash ../rust-fs-core/scripts/test-floor.sh blk-probe-debug 51
+          fi
+      # THE PROFILE THAT SHIPS: the tarball is built --release, with opt-level
+      # 3 and LTO, where an offset computation that panics in debug wraps.
+      - name: test (release)
+        shell: bash
+        run: |
+          bash ../rust-fs-core/scripts/tier.sh "blk-probe (release)" blk-probe-release 175 8000 -- cargo test --locked --release -p rust-blk-probe --all-targets
+          if [ "$(uname -s)" = Linux ]; then
+            bash ../rust-fs-core/scripts/test-floor.sh blk-probe-release 56
+          else
+            bash ../rust-fs-core/scripts/test-floor.sh blk-probe-release 51
+          fi
+      - name: keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-blk-probe-${{ matrix.os }}
+          path: tmp/logs/
+          if-no-files-found: warn
+      - name: clippy
+        run: cargo clippy --locked -p rust-blk-probe --all-targets -- -D warnings
+
+  # THE TARBALLS A blk.probe RELEASE WOULD PUBLISH, BUILT ON EVERY PULL REQUEST
+  # a code change makes. release-blk-probe.yml runs only on a tag, which is the
+  # one moment nobody wants to find out that packaging broke, so the same two
+  # scripts it runs -- package.sh, then check-package.sh -- run here, once per
+  # platform a release ships, each on a runner that builds it natively.
+  # Nothing is attested or uploaded from here; the tarballs are kept as
+  # artifacts so they can be inspected.
+  # crates/blk-probe/tests/scripts/test-release-platforms.sh fails a pull
+  # request that drops a platform from these legs or from the release's.
+  blk-probe-package:
+    name: blk-probe package / ${{ matrix.platform }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-latest
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: clone rust-fs-core sibling
+        shell: bash
+        run: git clone --depth 1 --branch v0.3.12 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-27
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: build the binary the tarball carries
+        run: cargo build --locked --release -p rust-blk-probe --bin blk_probe
+      - name: package it, and check what was packaged
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version = ' crates/blk-probe/Cargo.toml | sed 's/version = //; s/"//g')"
+          tarball="$(bash crates/blk-probe/scripts/package.sh target/release/blk_probe "$version" ${{ matrix.platform }} dist)"
+          bash crates/blk-probe/scripts/check-package.sh "$tarball"
+      - name: keep the tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: blk-probe-tarball-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
@@ -437,6 +570,12 @@ jobs:
         # agent-core v6: a pull request adds changelog.d/<branch>.md rather
         # than editing CHANGELOG.md. Run directly, like the check above.
         run: bash ../rust-fs-core/scripts/changelog-check.sh
+      - name: the blk.probe tool's changelog entries are fragments too
+        # The tool is released on its own tags with its own CHANGELOG.md, so
+        # its fragments are in crates/blk-probe/changelog.d/ (#150).
+        env:
+          FS_CORE_CALLER: crates/blk-probe
+        run: bash ../rust-fs-core/scripts/changelog-check.sh
       - name: the script tests pass
         # Every tests/scripts/*.sh, by glob, so a new guard is picked up
         # without editing this file. `nullglob` off on purpose: an empty
@@ -444,7 +583,7 @@ jobs:
         # the step fails rather than passing having run nothing.
         run: |
           set -euo pipefail
-          for t in tests/scripts/*.sh; do
+          for t in tests/scripts/*.sh crates/blk-probe/tests/scripts/*.sh; do
             echo "::group::$t"
             bash "$t"
             echo "::endgroup::"
@@ -502,10 +641,10 @@ jobs:
     # tests/scripts/test-ci-plan.sh. It fails on a missing or invalid plan,
     # a job missing from needs, and any failure, cancellation or skip the
     # plan did not ask for: test-release and oracle may skip only on a quick
-    # plan or a documentation-only change, the test matrix only on the
-    # latter, and nothing else at all.
+    # plan or a documentation-only change, the test matrix and the two
+    # blk-probe jobs only on the latter, and nothing else at all.
     if: always()
-    needs: [changes, test, test-release, oracle, fmt, semver]
+    needs: [changes, test, test-release, oracle, fmt, semver, blk-probe, blk-probe-package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

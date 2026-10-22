@@ -80,6 +80,22 @@ jobs:
       - name: Fuzz
         run: ./scripts/fuzz-all.sh "${{ inputs.seconds || '120' }}"
 
+      # THE blk.probe TOOL'S TARGETS (#150): `probe` feeds a whole image
+      # through container detection, the container reader, the partition walk
+      # and the sniff, and `spliced` puts hostile bytes inside a valid
+      # container. Its own fuzz crate, corpus and gate
+      # (crates/blk-probe/tests/fuzz_decoders.rs), moved with it. `always()`
+      # so a finding in the library's targets does not hide the tool's.
+      - name: Show what the tool's corpus holds
+        if: always()
+        run: |
+          find crates/blk-probe/fuzz/corpus -type f | sort
+          echo "total: $(find crates/blk-probe/fuzz/corpus -type f | wc -l) seeds"
+
+      - name: Fuzz the blk.probe tool
+        if: always()
+        run: ./crates/blk-probe/scripts/fuzz-all.sh "${{ inputs.seconds || '120' }}"
+
       # WITHOUT THIS THE FINDING IS LOST. A crash reproducer lives in
       # fuzz/artifacts/<target>/ on the runner, and the runner is thrown
       # away. The log would say a target crashed and the bytes that
@@ -90,6 +106,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifacts
-          path: fuzz/artifacts/
+          path: |
+            fuzz/artifacts/
+            crates/blk-probe/fuzz/artifacts/
           if-no-files-found: ignore
           retention-days: 90

@@ -38,11 +38,14 @@ plan_is some_future_event full
 if bash "$PLAN" "" >/dev/null 2>&1; then fail "ci-plan with no event succeeded"; else ok; fi
 
 # --- the verdict ------------------------------------------------------------
-# needs <changes> <test> <test-release> <oracle> <fmt> <semver>: a toJSON(needs)
-# object with those results; "-" leaves the job out.
+# needs <changes> <test> <test-release> <oracle> <fmt> <semver> [<blk-probe>
+# <blk-probe-package>]: a toJSON(needs) object with those results; "-" leaves
+# the job out. The two blk-probe jobs are gated exactly as the test matrix is,
+# so when they are not given they take its result.
 needs() {
-    local names=(changes test test-release oracle fmt semver) results=("$@") i out= sep=
-    for i in 0 1 2 3 4 5; do
+    local names=(changes test test-release oracle fmt semver blk-probe blk-probe-package) results=("$@") i out= sep=
+    [ "$#" -eq 6 ] && results+=("$2" "$2")
+    for i in 0 1 2 3 4 5 6 7; do
         [ "${results[$i]}" = - ] && continue
         out="$out$sep\"${names[$i]}\":{\"result\":\"${results[$i]}\",\"outputs\":{}}"
         sep=,
@@ -82,6 +85,16 @@ verdict pass full false "$(needs $S skipped skipped skipped $S $S)" "full, docs 
 verdict pass quick false "$(needs $S skipped skipped skipped $S $S)" "quick, docs only"
 verdict fail full false "$(needs $S skipped skipped skipped skipped $S)" "full, docs only, fmt skipped"
 # Missing jobs and missing or invalid plans.
+# The blk.probe tool's jobs: gated like the test matrix, skipped only for a
+# documentation-only change, and never on a quick plan.
+verdict fail quick true "$(needs $S $S skipped skipped $S $S skipped $S)" "quick, blk-probe skipped"
+verdict fail full true "$(needs $S $S $S $S $S $S $S skipped)" "full, blk-probe package skipped"
+verdict fail quick true "$(needs $S $S skipped skipped $S $S failure $S)" "quick, blk-probe failed"
+verdict fail full true "$(needs $S $S $S $S $S $S $S cancelled)" "full, blk-probe package cancelled"
+verdict pass quick false "$(needs $S skipped skipped skipped $S $S skipped skipped)" "quick, docs only, blk-probe skipped"
+verdict fail quick true "$(needs $S $S skipped skipped $S $S - $S)" "quick, blk-probe missing"
+verdict fail full true "$(needs $S $S $S $S $S $S $S -)" "full, blk-probe package missing"
+
 verdict fail full true "$(needs $S $S $S - $S $S)" "full, oracle missing"
 verdict fail quick true "$(needs $S $S - skipped $S $S)" "quick, release missing"
 verdict fail "" true "$(needs $S $S skipped skipped $S $S)" "no profile"
@@ -92,8 +105,8 @@ verdict fail full true "" "no needs at all"
 verdict fail full true "not json" "needs not JSON"
 
 # A floor, so a table that stopped being read cannot pass by checking nothing.
-if [ "$rows" -lt 34 ]; then
-    fail "only $rows truth-table rows ran, floor is 34"
+if [ "$rows" -lt 41 ]; then
+    fail "only $rows truth-table rows ran, floor is 41"
 fi
 
 if [ "$fails" -gt 0 ]; then

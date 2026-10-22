@@ -89,9 +89,13 @@ fn read_or_panic(path: &Path) -> String {
 const FS_CORE_PIN_SITES: &[(&str, usize)] = &[
     ("Cargo.toml", 1),
     ("fuzz/Cargo.toml", 1),
-    (".github/workflows/ci.yml", 6),
+    (".github/workflows/ci.yml", 8),
     (".github/workflows/fuzz.yml", 1),
     (".github/workflows/release.yml", 1),
+    // The blk.probe tool, a workspace member since #150: its manifest and the
+    // workflow that releases it build against the same rust-fs-core.
+    ("crates/blk-probe/Cargo.toml", 1),
+    (".github/workflows/release-blk-probe.yml", 1),
 ];
 
 fn fs_core_versions_declared(text: &str) -> Vec<String> {

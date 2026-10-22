@@ -16,6 +16,28 @@ exclude = ["fuzz"]
 [package.metadata.semver]
 former-name = "am-partitions"
 
+# ONE REPOSITORY, TWO CRATES (#150). This library says where the regions of
+# a disk are and sniffs what each holds; `crates/blk-probe` is the `blk.probe`
+# command-line tool that opens a disk image (raw, qcow2, vhd, vhdx, vmdk) and
+# prints that answer as JSON. They were two repositories, and the tool carried
+# a second copy of the XFS, Btrfs and EROFS sniff; as one workspace a change
+# to the sniff is tested through the tool in the same pull request.
+#
+# THIS PACKAGE STAYS AT THE ROOT, and it is the workspace's only default
+# member: `cargo build`, `cargo test` and `cargo publish` here mean the
+# library, exactly as they did before the tool arrived, and the library's
+# dependency list is its own. The tool is reached with `-p rust-blk-probe`,
+# and only it pulls in the four image readers.
+#
+# The two fuzz crates are their own workspaces, on their own toolchain
+# (nightly, for cargo-fuzz). The library's is excluded here; the tool's sits
+# under a member's directory, where cargo would overrule an `exclude`, so it
+# declares its own empty `[workspace]` instead.
+[workspace]
+members = ["crates/blk-probe"]
+default-members = ["."]
+exclude = ["fuzz"]
+
 [lib]
 # Published as `rust-disk-partitions` on crates.io; consumers
 # `use disk_partitions::...` inside their code. The import is the repository
@@ -92,6 +114,15 @@ required-features = ["oracle"]
 name = "oracle_lvm"
 required-features = ["oracle"]
 
+# ONE rust-fs-core FOR THE WHOLE GRAPH. The image readers the tool links
+# depend on rust-fs-core from crates.io; this library and the tool use the
+# checkout beside the repository. Without the patch cargo builds both, and
+# the tool's link carries two copies of every `#[no_mangle]` fs_core_* entry
+# point. A patch is a workspace setting and never reaches a consumer of the
+# published library.
+[patch.crates-io]
+rust-fs-core = { path = "../rust-fs-core" }
+
 [profile.release]
 lto = true
 codegen-units = 1
@@ -101,3 +132,8 @@ panic = "unwind"
 [profile.dev]
 opt-level = 1
 panic = "unwind"
+
+# The tool's release binary is stripped, as it was in its own repository; a
+# profile is a workspace setting, so the override lives here.
+[profile.release.package.rust-blk-probe]
+strip = true

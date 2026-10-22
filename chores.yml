@@ -11,13 +11,14 @@ chore_min_version: 0.6.0
 # sibling library exposes.
 #
 # `artifact` PRINTS A DIRECTORY, NOT A FILE. That is the one place this
-# differs from rust-blk-probe, whose single binary lets its `artifact` name a
-# file: this crate produces libdisk_partitions.a AND the headers beside it, so
+# differs from the blk.probe tool in crates/blk-probe, whose single binary
+# lets its `blk-probe:artifact` name a file: this crate produces libdisk_partitions.a AND the headers beside it, so
 # there is no single path to name.
 #
 # NO KNOWN CONSUMER LINKS THIS ARCHIVE TODAY, and that is worth saying
 # rather than leaving a reader to wonder why the task exists. Consumers
-# take rust-disk-partitions as a CRATE — through rust-disk-probe, and as a
+# take rust-disk-partitions as a CRATE — through the blk.probe tool in
+# crates/blk-probe, and as a
 # dev-dependency of the img readers' `inspect` example — so it arrives
 # already linked inside somebody else's output. The task is here for
 # uniformity, for anyone building this crate on its own, and because the
@@ -34,6 +35,16 @@ vars:
   # `[package].name` is rust-disk-partitions; `[lib].name` is partitions, so cargo
   # writes libdisk_partitions.a. The header mirrors the lib name.
   LIBNAME: disk_partitions
+  # THE blk.probe TOOL (#150), crates/blk-probe. Cargo names the executable
+  # after `[[bin]].name`, so it writes target/<triple>/release/blk_probe, and
+  # crates/blk-probe/scripts/stage-binary.sh renames it to the tool's name:
+  # cargo refuses a dot in a target name. THE TOOL IS NAMED blk.probe AND MUST
+  # NOT CHANGE ALONE -- a consumer stages it and invokes it by that name, and a
+  # rename breaks it silently at run time.
+  ARM_TRIPLE: aarch64-apple-darwin
+  X86_TRIPLE: x86_64-apple-darwin
+  BINNAME: blk_probe
+  TOOLNAME: blk.probe
 
 tasks:
   staticlib:
@@ -251,13 +262,13 @@ tasks:
     silent: true
     # NO `deps: [staticlib]`. chore prints "task: staticlib is up to date" on
     # STDOUT, which a caller capturing this as a value receives as PART OF THE
-    # VALUE — measured on rust-blk-probe, where the capture came back as two
+    # VALUE — measured on the blk.probe tool, where the capture came back as two
     # lines and the caller's path check failed. A value-returning task returns
     # a value and does nothing else; the caller builds first, then asks. Two
     # calls, on purpose.
     #
     # IT PRINTS A DIRECTORY, NOT A FILE, and that is the one place this differs
-    # from rust-blk-probe's `artifact`. That crate produces a single binary, so
+    # from `blk-probe:artifact` below. The tool produces a single binary, so
     # it can name a file. This one produces libdisk_partitions.a AND the headers
     # beside it, so there is no single path to name — A CONSUMER COPIES THE
     # CONTENTS of what this prints. A consumer that treats it as a file path
@@ -272,14 +283,100 @@ tasks:
     cmds:
       - bash ../rust-fs-core/scripts/agents-core-check.sh
       - bash ../rust-fs-core/scripts/changelog-check.sh
+      - 'FS_CORE_CALLER=crates/blk-probe bash ../rust-fs-core/scripts/changelog-check.sh'
       - task: test:scripts
       - cargo fmt --check
       - cargo clippy --locked --all-targets -- -D warnings
+      - cargo clippy --locked -p rust-blk-probe --all-targets -- -D warnings
 
   test:scripts:
-    desc: Every tests/scripts/*.sh guard, exactly as CI runs them
+    desc: Every tests/scripts/*.sh guard, the tool's included, exactly as CI runs them
     cmds:
-      - 'for t in tests/scripts/*.sh; do bash "$t" || exit 1; done'
+      - 'for t in tests/scripts/*.sh crates/blk-probe/tests/scripts/*.sh; do bash "$t" || exit 1; done'
+
+  # THE blk.probe TOOL'S TASKS (#150). It was the rust-blk-probe repository,
+  # and these are its tasks, under a `blk-probe:` prefix: the library's
+  # `staticlib`/`artifact` pair keeps its names, so no consumer of either
+  # notices the other.
+  #
+  # `binary`, NOT `staticlib`: the tool produces no archive and no headers,
+  # but one universal arm64 + x86_64 executable a host app shells out to.
+  blk-probe:binary:
+    desc: Build the universal arm64+x86_64 blk.probe binary into crates/blk-probe/dist/
+    vars:
+      OUT: 'crates/blk-probe/dist'
+    # LITERAL patterns, for the reason `staticlib`'s are. The library is a
+    # source of the tool's, because the tool is a front for it.
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+      - 'src/**/*.rs'
+      - crates/blk-probe/Cargo.toml
+      - 'crates/blk-probe/src/**/*.rs'
+      - crates/blk-probe/scripts/stage-binary.sh
+      - '../rust-fs-core/Cargo.toml'
+    generates:
+      - '{{.OUT}}/{{.TOOLNAME}}'
+    cmds:
+      - 'rustup target add {{.ARM_TRIPLE}}'
+      - 'rustup target add {{.X86_TRIPLE}}'
+      - 'cargo build --locked --release -p rust-blk-probe --target {{.ARM_TRIPLE}}'
+      - 'cargo build --locked --release -p rust-blk-probe --target {{.X86_TRIPLE}}'
+      # One lipo'd file, renamed from the cargo target to the tool's name.
+      - >-
+        crates/blk-probe/scripts/stage-binary.sh "{{.OUT}}"
+        "target/{{.ARM_TRIPLE}}/release/{{.BINNAME}}"
+        "target/{{.X86_TRIPLE}}/release/{{.BINNAME}}"
+      - 'lipo -info "{{.OUT}}/{{.TOOLNAME}}"'
+
+  blk-probe:artifact:
+    desc: Print the absolute path of the built blk.probe binary (build it first)
+    # A value, so silent and with no `deps:` -- see `artifact` above.
+    silent: true
+    cmds:
+      - 'cd "{{.OUT}}" && pwd -P | tr -d "\n"; printf "/blk.probe\n"'
+    vars:
+      OUT: 'crates/blk-probe/dist'
+
+  # THE TOOL'S TIERS, with the numbers ci.yml's `blk-probe` job has;
+  # tests/scripts/test-tier-budgets-agree.sh fails a pull request in which the
+  # two files disagree.
+  #
+  #     tier                measured                 budget       floor
+  #     blk-probe-debug     99 lines, 5,404 bytes    175 / 8,000  56 Linux, 51 elsewhere
+  #     blk-probe-release   the same shape           175 / 8,000  56 Linux, 51 elsewhere
+  #
+  # Measured on an aarch64 Linux host, warm, on the branch for #150. The
+  # budgets are rust-blk-probe's, which were raised to 175 lines for a cold
+  # release tier on ubuntu-24.04-arm (130 lines, its run 37481317710); CI now
+  # builds before each tier, so that headroom is for a runner that compiles a
+  # different dependency set. TWO FLOORS, ONE PER PLATFORM:
+  # crates/blk-probe/tests/oracle_tools.rs compiles only on Linux, so the two
+  # run different numbers of tests. They are every test that runs: the move
+  # took the five superblock-rule tests into the library with the rules.
+  blk-probe:test:
+    desc: The tool's suite in debug, quietly and under a measured budget
+    cmds:
+      - 'cargo test --locked -p rust-blk-probe --all-targets --no-run'
+      - 'bash ../rust-fs-core/scripts/tier.sh "blk-probe (debug)" blk-probe-debug 175 8000 -- cargo test --locked -p rust-blk-probe --all-targets'
+      - |
+        if [ "$(uname -s)" = Linux ]; then
+          bash ../rust-fs-core/scripts/test-floor.sh blk-probe-debug 56
+        else
+          bash ../rust-fs-core/scripts/test-floor.sh blk-probe-debug 51
+        fi
+
+  blk-probe:test:release:
+    desc: The tool's suite in release, the profile its tarball is built with
+    cmds:
+      - 'cargo test --locked --release -p rust-blk-probe --all-targets --no-run'
+      - 'bash ../rust-fs-core/scripts/tier.sh "blk-probe (release)" blk-probe-release 175 8000 -- cargo test --locked --release -p rust-blk-probe --all-targets'
+      - |
+        if [ "$(uname -s)" = Linux ]; then
+          bash ../rust-fs-core/scripts/test-floor.sh blk-probe-release 56
+        else
+          bash ../rust-fs-core/scripts/test-floor.sh blk-probe-release 51
+        fi
 
   check:semver:
     desc: Refuse a public-API break the version in Cargo.toml does not declare

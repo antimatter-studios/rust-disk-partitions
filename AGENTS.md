@@ -248,6 +248,19 @@ Partition-table parsing — MBR and GPT — over `rust-fs-core`'s device traits,
 exposed through a C ABI (`tests/c_abi.rs`) and linked into the app as a
 staticlib.
 
+**Two crates, one workspace** (#150). The library is the root package and the
+workspace's only default member, so a bare `cargo build`/`test`/`publish`
+means it, exactly as before. `crates/blk-probe` is the `blk.probe`
+command-line tool (formerly the rust-blk-probe repository): it opens a disk
+image through the four `rust-img-*` readers and prints what this library
+finds as JSON. Reach it with `-p rust-blk-probe` and the `blk-probe:*` chores.
+It is released on its own `blk-probe-v<version>` tags by
+`release-blk-probe.yml`, with its own `CHANGELOG.md` and `changelog.d/`; the
+library keeps `v<version>` and `release.yml`. A change to the sniff is tested
+through the tool in the same pull request: its `tests/oracle_tools.rs` holds
+the XFS, Btrfs and EROFS answers to `blkid -p` over images each format's own
+mkfs wrote.
+
 ## Running tests
 
 ```sh
@@ -257,9 +270,13 @@ chore test:oracle   # against sgdisk, sfdisk, blkid and partx
 chore build
 chore lint          # fmt, the agent-core check, clippy
 chore staticlib     # what the app links
+chore blk-probe:test          # the blk.probe tool's suite (Linux: with its blkid oracle)
+chore blk-probe:test:release
+chore blk-probe:binary        # the universal blk.probe binary
 ```
 
-CI runs `test`, `test-release`, `oracle`, `fmt`, and `ci-ok` aggregates them.
+CI runs `test`, `test-release`, `oracle`, `fmt`, `semver`, `blk-probe` and
+`blk-probe-package`, and `ci-ok` aggregates them.
 
 Both profiles are run on purpose: arithmetic that panics in debug can wrap
 silently in release. `tests/ci_profile.rs` holds the debug run to being a debug
@@ -289,9 +306,10 @@ also be one those tools accept.
 
 If a tool is missing, the job **fails** — it does not skip. Install it.
 
-## Three workflows, one gate
+## Four workflows, one gate
 
-`ci.yml`, `release.yml` (tag-driven) and `fuzz.yml` (nightly cron plus
+`ci.yml`, `release.yml` and `release-blk-probe.yml` (tag-driven: `v*` for the
+library, `blk-probe-v*` for the tool) and `fuzz.yml` (nightly cron plus
 dispatch). **Only `ci.yml` runs on `pull_request`**, so only its jobs may gate:
 a required check that never reports is a permanent block rather than a gate.
 
