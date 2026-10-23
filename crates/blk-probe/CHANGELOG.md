@@ -13,6 +13,47 @@ the rust-disk-partitions workspace, released on `blk-probe-v<version>` tags.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-23
+
+### Added
+
+- **bcachefs is reported as `"bcachefs"`.** The library has recognised it
+  since 0.7.0, and this tool printed `"unknown"` for it because its table of
+  filesystem codes stopped at SquashFS.
+
+### Changed
+
+- **The tool lives in the rust-disk-partitions workspace** at
+  `crates/blk-probe`, and is released from there on `blk-probe-v<version>`
+  tags, with the same `rust-blk-probe-<version>-<platform>.tar.gz` tarballs.
+  Verify one with `gh attestation verify ... --repo
+  antimatter-studios/rust-disk-partitions --signer-workflow
+  antimatter-studios/rust-disk-partitions/.github/workflows/release-blk-probe.yml`
+  (#150).
+- **The filesystem sniff is the library's alone.** The XFS, Btrfs and EROFS
+  rules this tool kept in `src/superblock.rs` moved into rust-disk-partitions'
+  `sniff.rs`, and the tool reads their answer through the C ABI like every
+  other kind. `blk_probe::superblock` is gone; the JSON is unchanged.
+- **Built on rust-disk-partitions 0.7.1 from this workspace, rust-fs-core
+  0.3.12, and the image readers from crates.io**: rust-img-qcow2 0.6.1,
+  rust-img-vhd 0.6.1, rust-img-vhdx 0.6.1 and rust-img-vmdk 0.5.1.
+
+- **CI compiles the release profile before the release tier runs.** A cold
+  cache no longer puts cargo's `Compiling` lines inside the release tier's
+  output budget (#55).
+- **The family's scripts run in place from rust-fs-core, and this repository
+  keeps no copy.** `scripts/core.sh` and `scripts/tier.sh` are gone; CI and
+  chores run `../rust-fs-core/scripts/NAME.sh` at the pinned version
+  (rust-fs-core 0.3.3, #212).
+- **A release's notes are its CHANGELOG section**, and a tag the CHANGELOG
+  does not describe stops before anything is published (rust-fs-core#209).
+- **Built on the renamed crates.** `am-fs-core`, `am-img-qcow2`,
+  `am-img-vhd`, `am-img-vhdx`, `am-img-vmdk` and `am-partitions` are
+  `rust-fs-core` 0.3.3, `rust-img-qcow2` 0.6.0, `rust-img-vhd` 0.6.0,
+  `rust-img-vhdx` 0.6.0, `rust-img-vmdk` 0.5.0 and `rust-disk-partitions`
+  0.6.0, checked out beside this one at those tags. The tool's output and
+  exit codes are unchanged.
+
 ## [0.1.2] — 2026-10-03
 
 A tool release: the library's API is unchanged. Nothing is published to
@@ -180,6 +221,7 @@ release, with build provenance. Nothing is published to crates.io.
   content silently instead of erroring.
 
 [Unreleased]: https://github.com/antimatter-studios/rust-disk-partitions/commits/main/crates/blk-probe
+[0.2.0]: https://github.com/antimatter-studios/rust-disk-partitions/releases/tag/blk-probe-v0.2.0
 [0.1.2]: https://github.com/antimatter-studios/rust-blk-probe/compare/v0.1.0...v0.1.2
 [0.1.1]: https://github.com/antimatter-studios/rust-blk-probe/compare/v0.1.0...v0.1.2
 [0.1.0]: https://github.com/antimatter-studios/rust-blk-probe/releases/tag/v0.1.0

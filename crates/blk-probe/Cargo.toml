@@ -1,6 +1,6 @@
 [package]
 name = "rust-blk-probe"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/antimatter-studios/rust-disk-partitions"
