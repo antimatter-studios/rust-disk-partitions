@@ -317,7 +317,7 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "rust-blk-probe"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "rust-disk-partitions",
  "rust-fs-core",
