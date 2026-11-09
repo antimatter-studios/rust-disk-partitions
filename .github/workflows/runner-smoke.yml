@@ -1,0 +1,21 @@
+name: Private runner smoke test
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/runner-smoke.yml
+
+jobs:
+  private-runner:
+    runs-on: antimatter-vps-linux-x64
+    timeout-minutes: 10
+    steps:
+      - name: Report runner identity
+        shell: bash
+        run: |
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          test -n "$RUNNER_NAME"
+          printf 'runner_name=%s\n' "$RUNNER_NAME"
+          printf 'runner_os=%s\n' "$RUNNER_OS"
+          printf 'runner_arch=%s\n' "$RUNNER_ARCH"
